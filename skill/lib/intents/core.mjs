@@ -423,11 +423,56 @@ export function askIntent(state, id, token, question) {
   return { intent };
 }
 
+// Environment variables that would point git at a different repository,
+// work tree, or object store than the one that contains the Cockpit root.
+const GIT_LOCATION_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CEILING_DIRECTORIES', 'GIT_NAMESPACE', 'GIT_PREFIX'];
+
+function gitEnv() {
+  const env = { ...process.env, LC_ALL: 'C', LANGUAGE: 'C' };
+  for (const name of GIT_LOCATION_ENV) delete env[name];
+  return env;
+}
+
+function hasGitEntry(dir) {
+  return fs.lstatSync(path.join(dir, '.git'), { throwIfNoEntry: false }) !== undefined;
+}
+
+function gitEntryAtOrAbove(dir) {
+  for (let current = dir; ; current = path.dirname(current)) {
+    if (hasGitEntry(current)) return true;
+    if (path.dirname(current) === current) return false;
+  }
+}
+
+// The knowledge repo is whatever repository Git itself discovers from the
+// Cockpit root (the root may be the work tree top level or a subdirectory of
+// it). Returns its top level, or null only when the root is provably not in
+// any Git repository. Anything ambiguous (git missing, a .git entry Git cannot
+// use, an unsafe-ownership refusal) fails closed instead of skipping
+// verification.
+function knowledgeRepoFor(root) {
+  const realRoot = fs.realpathSync.native(root);
+  const probe = spawnSync('git', ['-C', realRoot, 'rev-parse', '--show-toplevel'], { encoding: 'utf8', env: gitEnv() });
+  if (probe.error || probe.status !== 0) {
+    const notARepo = !probe.error && /not a git repository/i.test(probe.stderr ?? '');
+    if (notARepo && !gitEntryAtOrAbove(realRoot)) return null;
+    throw invalid('commit', 'Cannot verify the commit: the knowledge repo is not usable by git.');
+  }
+  const top = fs.realpathSync.native(probe.stdout.trim());
+  // A .git entry in the root itself must be the repo Git uses; otherwise an
+  // empty or broken root/.git would silently bind to an enclosing repo.
+  if (!isPathInside(realRoot, top) || (hasGitEntry(realRoot) && top !== realRoot)) {
+    throw invalid('commit', 'Cannot verify the commit: the Cockpit root\'s .git is not the repository git resolves.');
+  }
+  return top;
+}
+
 function verifyCommit(root, commit) {
   if (!COMMIT_RE.test(commit)) throw invalid('commit', 'Expected a hex commit id.');
-  if (!fs.existsSync(path.join(root, '.git'))) return commit;
-  const result = spawnSync('git', ['-C', root, 'rev-parse', '--verify', '--quiet', `${commit}^{commit}`], { encoding: 'utf8' });
-  if (result.status !== 0) throw invalid('commit', 'Commit does not exist in the knowledge repo.');
+  const repo = knowledgeRepoFor(root);
+  if (!repo) return commit;
+  const result = spawnSync('git', ['-C', repo, 'rev-parse', '--verify', '--quiet', `${commit}^{commit}`], { encoding: 'utf8', env: gitEnv() });
+  if (result.error || result.status !== 0) throw invalid('commit', 'Commit does not exist in the knowledge repo.');
   return result.stdout.trim();
 }
 
