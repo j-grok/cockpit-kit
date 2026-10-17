@@ -3,10 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <meta name="cockpit:source" content="self">
   <meta name="cockpit:rendered-at" content="2026-07-05T18:00:00Z">
   <title>Search</title>
   <link rel="stylesheet" href="../cockpit.css">
+  <script src="../cockpit-theme.js"></script>
 </head>
 <body>
   <nav aria-label="Primary" class="cockpit-nav">
@@ -18,6 +20,15 @@
     <a href="../inbox/">Inbox</a>
     <a href="./" aria-current="page">Search</a>
     <a href="../design-system.html">Design System</a>
+    <fieldset class="theme-switch" data-cockpit-theme-switch hidden>
+      <legend>Theme</legend>
+      <div class="options">
+        <label><input type="radio" name="cockpit-theme" value="system" checked><span>System</span></label>
+        <label><input type="radio" name="cockpit-theme" value="light"><span>Light</span></label>
+        <label><input type="radio" name="cockpit-theme" value="dark"><span>Dark</span></label>
+      </div>
+      <span class="sr-only" data-cockpit-theme-resolved></span>
+    </fieldset>
   </nav>
   <main class="page">
     <div class="breadcrumbs"><a href="../">Cockpit</a><span class="sep">›</span><span class="here">Search</span></div>
@@ -27,7 +38,7 @@
     </header>
     <form class="panel" id="search-form" role="search">
       <label for="q" class="meta-sample">Search local pages</label>
-      <div class="nav-search-field" style="margin-top: 8px;"><input id="q" name="q" type="search" autocomplete="off" inputmode="search" placeholder="Search local pages" style="width:100%; min-height:40px; border:1px solid var(--rule); border-radius:var(--radius); padding:8px 10px; font:inherit;"></div>
+      <div class="nav-search-field" style="margin-top: 8px;"><input id="q" name="q" type="search" autocomplete="off" inputmode="search" placeholder="Search local pages" style="width:100%; min-height:40px; background:var(--surface); color:var(--ink); border:1px solid var(--rule-strong); border-radius:var(--radius); padding:8px 10px; font:inherit;"></div>
     </form>
     <section class="source-line" id="status">Loading search index...</section>
     <h2 class="section">Results</h2>
