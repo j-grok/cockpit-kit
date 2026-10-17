@@ -39,8 +39,8 @@ Options:
   --no-auth           Disable local bearer-token cookie auth
   --write             Also serve the operator intents API at /api/cockpit/v1
                       (requires auth; state lives outside the root)
-  --origin <origin>   Exact browser origin allowed to mutate (repeatable;
-                      default: the loopback origins of this server)
+  --origin <origin>   Exact browser origin allowed to mutate; repeat once per
+                      origin (default: this server's loopback origins)
   --webhook-url <url> POST a content-free wake notification on new intents
                       and replies (or COCKPIT_INTENTS_WEBHOOK_URL)
   --help              Show this help

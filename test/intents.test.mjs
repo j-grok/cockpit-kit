@@ -529,3 +529,86 @@ test('intents.mjs CLI lists, claims, resolves, and shows history', () => {
   assert.equal(run('archive', intent.intent_id).status, 0);
   assert.equal(run('bogus').status, 1);
 });
+
+// ---------- multiple exact origins ----------
+
+const ORIGIN_A = 'https://cockpit.example.com';
+const ORIGIN_B = 'https://cockpit.tailnet.example.ts.net';
+
+test('origin parsing normalizes exact origins and rejects wildcards, paths, lists, and malformed values', async () => {
+  const { normalizeOrigin, normalizeOrigins } = await import('../skill/lib/intents/origins.mjs');
+  const { parseServiceArgs } = await import('../skill/scripts/intents-service.mjs');
+  assert.equal(normalizeOrigin(ORIGIN_A), ORIGIN_A);
+  assert.equal(normalizeOrigin(`${ORIGIN_B}/`), ORIGIN_B);
+  assert.equal(normalizeOrigin('HTTPS://Cockpit.Example.COM:443'), ORIGIN_A);
+  assert.equal(normalizeOrigin('http://127.0.0.1:18765'), 'http://127.0.0.1:18765');
+  assert.equal(normalizeOrigin('https://cockpit.example.com:8443'), 'https://cockpit.example.com:8443');
+  assert.deepEqual(normalizeOrigins([ORIGIN_A, ORIGIN_B, `${ORIGIN_A}/`]), [ORIGIN_A, ORIGIN_B]);
+  for (const bad of ['*', 'https://*', 'https://*.example.com', `${ORIGIN_A},${ORIGIN_B}`, `${ORIGIN_A}/path`, `${ORIGIN_A}?q=1`, `${ORIGIN_A}#x`,
+    'cockpit.example.com', '//cockpit.example.com', 'ftp://cockpit.example.com', 'https://', 'https://user@cockpit.example.com', ` ${ORIGIN_A}`, 'null', '', 'https://exa mple.com']) {
+    assert.throws(() => normalizeOrigin(bad), /not an exact origin/, bad);
+  }
+  const parsed = parseServiceArgs(['--origin', ORIGIN_A, `--origin=${ORIGIN_B}/`], {});
+  assert.deepEqual(parsed.origins, [ORIGIN_A, ORIGIN_B]);
+  assert.throws(() => parseServiceArgs(['--origin', `${ORIGIN_A},${ORIGIN_B}`], {}), /repeat the flag/);
+  assert.throws(() => parseServiceArgs(['--origin', '*'], {}), /wildcards/);
+  assert.throws(() => createIntentsService({ root: makeRoot(), origins: ['https://*.example.com'], secret: SECRET, env: env() }), /wildcards/);
+});
+
+test('service accepts either configured origin with the same CSRF token and denies near misses', async () => {
+  await withService(async ({ port, auth }) => {
+    const { csrf_token: csrf } = (await request(port, { path: '/api/cockpit/v1/capabilities', headers: auth })).json;
+    const post = (origin) => request(port, {
+      method: 'POST', path: '/api/cockpit/v1/intents', body: capture(),
+      headers: { ...auth, Origin: origin, 'X-Cockpit-CSRF': csrf, 'Content-Type': 'application/json' },
+    });
+    const a = await post(ORIGIN_A);
+    assert.equal(a.status, 201, a.text);
+    const b = await post(ORIGIN_B);
+    assert.equal(b.status, 201, b.text);
+    // Reply from origin B to an intent created from origin A, same CSRF token.
+    const reply = await request(port, {
+      method: 'POST', path: `/api/cockpit/v1/intents/${a.json.intent_id}/replies`,
+      headers: { ...auth, Origin: ORIGIN_B, 'X-Cockpit-CSRF': csrf, 'Content-Type': 'application/json' },
+      body: { request_id: rid(), operator_message: 'Follow-up from the other origin.' },
+    });
+    assert.equal(reply.status, 200, reply.text);
+    for (const nearMiss of [
+      `${ORIGIN_A}/`, `${ORIGIN_B}/`,
+      'http://cockpit.example.com', 'http://cockpit.tailnet.example.ts.net',
+      'https://evil.cockpit.example.com', 'https://sub.cockpit.tailnet.example.ts.net',
+      'https://cockpit.example.com.evil.test', 'https://example.com', 'https://tailnet.example.ts.net',
+      'https://cockpit.example.com:443', 'https://cockpit.example.com:8443', 'HTTPS://COCKPIT.EXAMPLE.COM',
+      `${ORIGIN_A}, ${ORIGIN_B}`, '*', 'null',
+    ]) {
+      const denied = await post(nearMiss);
+      assert.equal(denied.status, 403, nearMiss);
+      assert.equal(denied.json.error.code, 'origin_denied', nearMiss);
+    }
+  }, { origins: [ORIGIN_A, `${ORIGIN_B}/`] });
+});
+
+test('serve --write accepts multiple repeated --origin flags', async () => {
+  const root = makeRoot();
+  const e = env();
+  e.COCKPIT_HOME = root;
+  assert.throws(() => parseServeConfig({ argv: ['--write', '--origin', `${ORIGIN_A},${ORIGIN_B}`], env: e }), /repeat the flag/);
+  const config = parseServeConfig({ argv: ['--write', '--port', '0', '--origin', ORIGIN_A, `--origin=${ORIGIN_B}`], env: e });
+  assert.deepEqual(config.origins, [ORIGIN_A, ORIGIN_B]);
+  const server = createServeServer(config, { token: 'test-token', env: e });
+  const port = await listen(server);
+  try {
+    const cookie = 'cockpit_serve=test-token';
+    const { csrf_token: csrf } = (await request(port, { path: '/api/cockpit/v1/capabilities', headers: { Cookie: cookie } })).json;
+    const post = (origin) => request(port, {
+      method: 'POST', path: '/api/cockpit/v1/intents', body: capture(),
+      headers: { Cookie: cookie, Origin: origin, 'X-Cockpit-CSRF': csrf, 'Content-Type': 'application/json' },
+    });
+    assert.equal((await post(ORIGIN_A)).status, 201);
+    assert.equal((await post(ORIGIN_B)).status, 201);
+    assert.equal((await post(`http://127.0.0.1:${port}`)).status, 403, 'explicit origins replace the loopback default');
+    assert.equal((await post('http://cockpit.example.com')).status, 403);
+  } finally {
+    await close(server);
+  }
+});

@@ -7,6 +7,7 @@ import {
   IntentError, LIMITS, PROTOCOL_VERSION, createIntent, listIntents, operatorArchive, publicIntent, replyIntent,
 } from './core.mjs';
 import { StoreError } from './store.mjs';
+import { normalizeOrigins } from './origins.mjs';
 
 export const API_PREFIX = '/api/cockpit/v1';
 const BODY_TIMEOUT_MS = 10000;
@@ -128,7 +129,10 @@ export function notifyWebhook(url, event, intent, { log = () => {} } = {}) {
 
 export function createIntentsApi({ root, store, allowedOrigins, authenticate, csrfSecret, webhookUrl = null, log = () => {} }) {
   if (!allowedOrigins || (typeof allowedOrigins !== 'function' && allowedOrigins.size === 0)) throw new Error('createIntentsApi requires at least one allowed origin');
-  const origins = () => (typeof allowedOrigins === 'function' ? allowedOrigins() : allowedOrigins);
+  // A static allowlist is validated once here; a function (serve --write
+  // loopback default) must return already-normalized origins.
+  const fixed = typeof allowedOrigins === 'function' ? null : new Set(normalizeOrigins([...allowedOrigins]));
+  const origins = () => fixed ?? allowedOrigins();
   if (!csrfSecret) throw new Error('createIntentsApi requires a CSRF secret');
   const buckets = new Map();
 

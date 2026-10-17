@@ -96,8 +96,12 @@ Behind an authenticating reverse proxy, run the standalone loopback service and 
 
 ```bash
 node ~/.local/share/cockpit-kit/skill/scripts/intents-service.mjs \
-  --root /path/to/knowledge-repo --origin https://cockpit.example --port 18767
+  --root /path/to/knowledge-repo --port 18767 \
+  --origin https://cockpit.example.com \
+  --origin https://cockpit.tailnet.example.ts.net
 ```
+
+Allowed origins: repeat `--origin` once per browser origin (both servers accept `--origin <o>` and `--origin=<o>`). Each value must be exactly `scheme://host[:port]` with an `http` or `https` scheme. Values are normalized at startup (lowercase host, default port dropped, one trailing `/` tolerated). Wildcards (`*`), comma-separated lists, paths, queries, fragments, and credentials are rejected, so a typo fails at startup instead of silently allowing nothing. Request `Origin` headers must then match one configured origin exactly: no subdomain, scheme, port, or trailing-slash variants. The CSRF token from `capabilities` is tied to the operator, not the origin, so it works from any allowed origin. `serve.mjs --write` uses the same flag. Without `--origin` it allows only its own loopback origins.
 
 Agents process the queue with the consumer CLI (see `skill/SKILL.md`, "Operator Request Queue"):
 

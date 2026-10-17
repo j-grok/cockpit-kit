@@ -124,7 +124,7 @@ Never run ambient `git add` or `git commit` from the caller's current directory.
 
 ## Operator Request Queue
 
-Some Cockpits run the optional write service (`serve.mjs --write` or `intents-service.mjs`), which lets the operator leave page comments and quick captures from the browser. Requests live in a private state file outside `COCKPIT_ROOT`; read and transition them only with the consumer CLI, never by opening that file or by scanning pages for request-like JSON.
+Some Cockpits run the optional write service (`serve.mjs --write` or `intents-service.mjs`), which lets the operator leave page comments and quick captures from the browser. The operator configures which exact browser origins may submit (one repeated `--origin scheme://host[:port]` flag per origin; no wildcards). Do not change that list or start the service unless the operator asks. Requests live in a private state file outside `COCKPIT_ROOT`; read and transition them only with the consumer CLI, never by opening that file or by scanning pages for request-like JSON.
 
 At session start, after resolving `COCKPIT_ROOT`, triage the queue when it is relevant to your session scope:
 

@@ -14,7 +14,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ArgumentError, resolveRoot, validateCockpitRoot } from '../lib/config.mjs';
 import { assertNode20, expandHome } from '../lib/paths.mjs';
-import { parseOrigin } from '../lib/serve-config.mjs';
+import { normalizeOrigin, normalizeOrigins } from '../lib/intents/origins.mjs';
 import { createIntentsApi, validateWebhookUrl } from '../lib/intents/http.mjs';
 import { IntentStore } from '../lib/intents/store.mjs';
 
@@ -26,7 +26,8 @@ function usage() {
 
 Options:
   --root <path>               Cockpit root (default: configured root)
-  --origin <origin>           Exact public browser origin, e.g. https://cockpit.example (required, repeatable)
+  --origin <origin>           Exact browser origin allowed to call the API (required; repeat the flag
+                              once per origin). scheme://host[:port] only: no path, no wildcard, no commas.
   --host <host>               Loopback host to bind (default: 127.0.0.1)
   --port <port>               Port to bind (default: ${DEFAULT_INTENTS_PORT})
   --proxy-secret-file <path>  Shared proxy secret (default: <state-dir>/proxy-secret, created 0600)
@@ -54,7 +55,7 @@ export function parseServiceArgs(argv, env) {
     };
     if (name === '--help' || name === '-h') options.help = true;
     else if (name === '--root' || name === '--cockpit-root') options.rootArgs.push(name, value());
-    else if (name === '--origin') options.origins.push(parseOrigin(value(), '--origin'));
+    else if (name === '--origin') options.origins.push(normalizeOrigin(value(), '--origin'));
     else if (name === '--host') {
       options.host = value();
       if (!['127.0.0.1', 'localhost', '::1'].includes(options.host)) throw new ArgumentError('--host must be loopback (127.0.0.1, localhost, ::1)');
@@ -93,14 +94,15 @@ function safeEqual(a, b) {
 }
 
 export function createIntentsService({ root, origins, secret, host = '127.0.0.1', port = DEFAULT_INTENTS_PORT, webhookUrl = null, env = process.env, log = () => {} }) {
-  if (!origins?.length) throw new ArgumentError('intents-service requires at least one --origin');
+  const allowed = normalizeOrigins(origins);
+  if (!allowed.length) throw new ArgumentError('intents-service requires at least one --origin');
   if (!secret) throw new Error('intents-service requires a proxy secret');
   const store = new IntentStore({ root, env });
   let server;
   const api = createIntentsApi({
     root: store.root,
     store,
-    allowedOrigins: new Set(origins),
+    allowedOrigins: new Set(allowed),
     authenticate: (req) => {
       if (!safeEqual(req.headers['x-cockpit-proxy-secret'], secret)) return null;
       const principal = String(req.headers['x-cockpit-principal'] ?? 'operator').toLowerCase();
@@ -123,6 +125,7 @@ export function createIntentsService({ root, origins, secret, host = '127.0.0.1'
     return res.end('Not found\n');
   });
   server.intentStore = store;
+  server.allowedOrigins = allowed;
   return server;
 }
 
@@ -150,7 +153,7 @@ async function main() {
     const address = server.address();
     process.stdout.write(`Cockpit root: ${root}\n`);
     process.stdout.write(`Intents API: http://${options.host === '::1' ? '[::1]' : options.host}:${address.port}/api/cockpit/v1\n`);
-    process.stdout.write(`Allowed origins: ${options.origins.join(', ')}\n`);
+    process.stdout.write(`Allowed origins: ${server.allowedOrigins.join(' ')}\n`);
     process.stdout.write(`State: ${store.file}\n`);
     process.stdout.write(`Proxy secret file: ${secretFile}\n`);
   });

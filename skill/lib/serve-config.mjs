@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ArgumentError, resolveRoot, validateCockpitRoot } from './config.mjs';
 import { parseToml } from './toml.mjs';
+import { normalizeOrigin, normalizeOrigins } from './intents/origins.mjs';
 
 export const DEFAULT_SERVE_HOST = '127.0.0.1';
 export const DEFAULT_SERVE_PORT = 18765;
@@ -41,17 +42,8 @@ function parsePort(value, source) {
   return port;
 }
 
-export function parseOrigin(value, source) {
-  let parsed;
-  try {
-    parsed = new URL(value);
-  } catch {
-    throw new ArgumentError(`${source} must be an exact origin such as https://cockpit.example`);
-  }
-  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.origin !== value.replace(/\/$/, '') || parsed.pathname !== '/' || parsed.search || parsed.hash || parsed.username) {
-    throw new ArgumentError(`${source} must be an exact origin such as https://cockpit.example`);
-  }
-  return parsed.origin;
+export function parseOrigin(value, source = '--origin') {
+  return normalizeOrigin(value, source);
 }
 
 function parseArgs(argv) {
@@ -129,7 +121,7 @@ export function parseServeConfig({ argv = [], env, stderr } = {}) {
   return {
     root,
     write,
-    origins: flags.origins ?? [],
+    origins: normalizeOrigins(flags.origins ?? []),
     webhookUrl: flags.webhookUrl ?? env.COCKPIT_INTENTS_WEBHOOK_URL ?? null,
     host: flags.host ?? fileOptions.host ?? DEFAULT_SERVE_HOST,
     port: flags.port ?? fileOptions.port ?? DEFAULT_SERVE_PORT,
