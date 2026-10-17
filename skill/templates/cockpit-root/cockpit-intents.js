@@ -50,9 +50,25 @@
     return p;
   }
 
-  function api(method, path, body) {
+  function fetchCapabilities() {
+    return fetch(API + '/capabilities', { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } })
+      .then(function (res) {
+        if (!res.ok || !/application\/json/.test(res.headers.get('content-type') || '')) return null;
+        return res.json();
+      })
+      .then(function (data) {
+        if (!data || data.protocol_version !== 1 || typeof data.csrf_token !== 'string' || !data.features) return null;
+        if (!Array.isArray(data.type_hints)) data.type_hints = [];
+        return data;
+      });
+  }
+
+  // The body is serialized once, so a CSRF retry resends exactly the same
+  // bytes (same request_id and version).
+  function api(method, path, body, retried) {
     var headers = { Accept: 'application/json' };
-    if (body !== undefined) {
+    var payload = body === undefined ? undefined : (typeof body === 'string' ? body : JSON.stringify(body));
+    if (payload !== undefined) {
       headers['Content-Type'] = 'application/json';
       headers['X-Cockpit-CSRF'] = caps.csrf_token;
     }
@@ -61,10 +77,20 @@
       credentials: 'same-origin',
       cache: 'no-store',
       headers: headers,
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: payload,
     }).then(function (res) {
       var json = /application\/json/.test(res.headers.get('content-type') || '') ? res.json() : Promise.resolve(null);
       return json.then(function (data) { return { status: res.status, ok: res.ok, data: data }; });
+    }).then(function (result) {
+      var code = result.data && result.data.error && result.data.error.code;
+      if (payload === undefined || retried || result.status !== 403 || code !== 'csrf_invalid') return result;
+      // The service restarted (new CSRF secret) or the session changed:
+      // refresh capabilities once and retry the identical request.
+      return fetchCapabilities().then(function (fresh) {
+        if (!fresh) return result;
+        caps.csrf_token = fresh.csrf_token;
+        return api(method, path, payload, true);
+      }, function () { return result; });
     });
   }
 
@@ -96,6 +122,7 @@
   var replyDrafts = {}; // per intent id: { text, requestId, version, note }
   var receipt = null; // last intent receipt shown in composer
   var listSeq = 0; // bumps on every list load; stale responses are ignored
+  var pagesLoaded = 1; // pages shown in the current view (Load more adds one)
   var view = 'open';
   var pollTimer = null, pollDelay = 5000;
 
@@ -136,13 +163,17 @@
   }
 
   function hasUnsentText() {
-    var any = Object.keys(drafts).some(function (k) { return drafts[k].message.trim() !== ''; });
-    return any || Object.keys(replyDrafts).some(function (k) { return replyDrafts[k].text.trim() !== ''; });
+    var any = Object.keys(drafts).some(function (k) {
+      var d = drafts[k];
+      return d.message.trim() !== '' || d.quote.trim() !== '' || d.url.trim() !== '' || !!d.pending;
+    });
+    return any || Object.keys(replyDrafts).some(function (k) { return replyDrafts[k].text.trim() !== '' || !!replyDrafts[k].pending; });
   }
 
   function open(next, opener) {
     lastOpener = opener || lastOpener;
     if (mode !== next || next === 'requests') receipt = null;
+    if (next === 'requests') pagesLoaded = 1;
     if (next === 'comment' || next === 'capture') {
       // Each mode keeps its own in-memory draft; switching never discards one.
       if (!drafts[next]) drafts[next] = newDraft(next);
@@ -221,29 +252,37 @@
     message.addEventListener('keydown', function (e) { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); } });
     form.addEventListener('submit', function (e) {
       e.preventDefault();
-      if (!draft.message.trim()) { status.textContent = 'Write a message first.'; message.focus(); return; }
-      submit.disabled = true;
-      status.textContent = 'Sending…';
-      var payload = {};
-      if (draft.quote.trim()) payload[isComment ? 'selected_text' : 'text'] = draft.quote;
-      if (!isComment && draft.url.trim()) payload.url = draft.url.trim();
-      var req = {
-        schema_version: 1,
-        request_id: draft.requestId,
-        mode: mode,
-        operator_message: draft.message,
-        target: isComment ? { page: target } : null,
-      };
-      if (isComment && draft.type) req.type_hint = draft.type;
-      if (Object.keys(payload).length) req.payload = payload;
-      // Remember exactly what was sent; a late response must not erase edits
-      // made after sending, or a different mode's draft.
       var submitted = draft;
-      var sent = draftSnapshot(submitted);
-      api('POST', '/intents', req).then(function (result) {
+      // An unconfirmed earlier POST (lost response) is retried with its exact
+      // original body first, so the service replays it instead of reporting
+      // idempotency_conflict; newer edits are kept for a separate request.
+      var pending = submitted.pending;
+      if (!pending) {
+        if (!submitted.message.trim()) { status.textContent = 'Write a message first.'; message.focus(); return; }
+        var payload = {};
+        if (submitted.quote.trim()) payload[isComment ? 'selected_text' : 'text'] = submitted.quote;
+        if (!isComment && submitted.url.trim()) payload.url = submitted.url.trim();
+        var req = {
+          schema_version: 1,
+          request_id: submitted.requestId,
+          mode: submitted.mode,
+          operator_message: submitted.message,
+          target: isComment ? { page: target } : null,
+        };
+        if (isComment && submitted.type) req.type_hint = submitted.type;
+        if (Object.keys(payload).length) req.payload = payload;
+        pending = submitted.pending = { body: JSON.stringify(req), snapshot: draftSnapshot(submitted) };
+      }
+      var confirming = draftSnapshot(submitted) !== pending.snapshot;
+      submit.disabled = true;
+      status.textContent = confirming ? 'Confirming your earlier submission first…' : 'Sending…';
+      api('POST', '/intents', pending.body).then(function (result) {
         submit.disabled = false;
         if (result.status === 201 || (result.status === 200 && result.data && result.data.replayed)) {
-          var unchanged = draftSnapshot(submitted) === sent;
+          if (submitted.pending === pending) submitted.pending = null;
+          // A late response must not erase edits made after sending, or a
+          // different mode's draft.
+          var unchanged = draftSnapshot(submitted) === pending.snapshot;
           if (drafts[submitted.mode] === submitted) {
             if (unchanged) drafts[submitted.mode] = newDraft(submitted.mode, true);
             else submitted.requestId = uuid(); // edited since sending: keep text, new request next time
@@ -257,13 +296,21 @@
               render();
             } else {
               showReceipt();
+              if (status.isConnected) status.textContent = 'Your earlier submission was received. Your newer edits are kept here; press Send to submit them as a new request.';
             }
             schedule(5000);
           }
-        } else if (status.isConnected) {
-          status.textContent = errorText(result);
-          announce(status.textContent);
+          return;
         }
+        if (result.status >= 500) {
+          // Outcome unknown: keep the pending body for an exact retry.
+          if (status.isConnected) status.textContent = 'Receipt not confirmed; retry this submission (it will not be duplicated).';
+        } else {
+          // Definitively rejected; nothing was stored under this request id.
+          if (submitted.pending === pending) submitted.pending = null;
+          if (status.isConnected) status.textContent = errorText(result);
+        }
+        if (status.isConnected) announce(status.textContent);
       }, function () {
         submit.disabled = false;
         if (!status.isConnected) return;
@@ -299,9 +346,9 @@
     [['open', 'Active'], ['history', 'Done']].forEach(function (pair) {
       var selected = view === pair[0];
       var tab = el('button', { type: 'button', role: 'tab', class: 'ci-tab', 'aria-selected': selected ? 'true' : 'false', tabindex: selected ? '0' : '-1', text: pair[1] });
-      tab.addEventListener('click', function () { view = pair[0]; render(); body.querySelector('.ci-tab[aria-selected="true"]').focus(); schedule(0); });
+      tab.addEventListener('click', function () { view = pair[0]; pagesLoaded = 1; render(); body.querySelector('.ci-tab[aria-selected="true"]').focus(); schedule(0); });
       tab.addEventListener('keydown', function (e) {
-        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); view = view === 'open' ? 'history' : 'open'; render(); body.querySelector('.ci-tab[aria-selected="true"]').focus(); schedule(0); }
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); view = view === 'open' ? 'history' : 'open'; pagesLoaded = 1; render(); body.querySelector('.ci-tab[aria-selected="true"]').focus(); schedule(0); }
       });
       tabs.appendChild(tab);
     });
@@ -314,40 +361,92 @@
     return !!(active && active.closest && active.closest('.ci-reply'));
   }
 
-  // force: replace the list even if a reply form has focus (used right after
-  // the operator's own action). focusId: intent to focus after rendering.
-  function loadList(cursor, force, focusId) {
+  function fetchPage(forView, cursor) {
+    return api('GET', '/intents?view=' + forView + '&limit=50' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : ''));
+  }
+
+  function moreButton(cursor) {
+    return el('button', { type: 'button', class: 'ci-link ci-more', text: 'Load more', on: { click: function () { loadMore(cursor); } } });
+  }
+
+  // Refresh the list, preserving the loaded range: re-fetch as many pages as
+  // the operator has loaded (via Load more) and replace them all at once.
+  // force: replace even if a reply form has focus (right after the operator's
+  // own action). focusId: intent to focus after rendering.
+  function loadList(force, focusId) {
     var list = body.querySelector('.ci-list');
     if (!list) return Promise.resolve(true);
     var forView = view;
     var seq = ++listSeq;
-    return api('GET', '/intents?view=' + forView + '&limit=50' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : '')).then(function (result) {
-      // Ignore responses superseded by a newer load, a view/mode change, or
-      // that arrive while the operator is typing a reply.
+    var want = pagesLoaded;
+    var items = [];
+    var cursor = null;
+    var got = 0;
+    function step() {
+      return fetchPage(forView, cursor).then(function (result) {
+        if (!result.ok) return result;
+        items = items.concat(result.data.items);
+        cursor = result.data.next_cursor;
+        got += 1;
+        if (cursor && got < want && seq === listSeq) return step();
+        return result;
+      });
+    }
+    return step().then(function (result) {
+      // Ignore responses superseded by a newer load (including Load more), a
+      // view/mode change, or that arrive while the operator is typing a reply.
       if (seq !== listSeq || mode !== 'requests' || view !== forView || !list.isConnected) return true;
       if (!force && isEditingReply()) return true;
-      if (!cursor) list.textContent = '';
       list.setAttribute('aria-busy', 'false');
-      var more = list.querySelector('.ci-more');
-      if (more) more.remove();
-      if (!result.ok) { list.appendChild(el('p', { class: 'ci-status', text: errorText(result) })); return false; }
-      if (!result.data.items.length && !cursor) {
+      if (!result.ok) {
+        var old = list.querySelector('.ci-status');
+        if (old) old.remove();
+        list.insertBefore(el('p', { class: 'ci-status', text: errorText(result) }), list.firstChild);
+        return false;
+      }
+      list.textContent = '';
+      if (!items.length) {
         list.appendChild(el('p', { class: 'ci-hint', text: forView === 'open' ? 'No active requests.' : 'No completed requests yet.' }));
       }
-      result.data.items.forEach(function (intent) { list.appendChild(renderIntent(intent)); });
+      items.forEach(function (intent) { list.appendChild(renderIntent(intent)); });
       if (focusId) {
         var target = list.querySelector('[data-intent-id="' + focusId + '"]');
         if (target) target.focus();
       }
-      if (result.data.next_cursor) {
-        list.appendChild(el('button', { type: 'button', class: 'ci-link ci-more', text: 'Load more', on: { click: function () { loadList(result.data.next_cursor); } } }));
-      }
+      if (cursor) list.appendChild(moreButton(cursor));
       return true;
     }, function () {
       if (seq !== listSeq) return false;
       list.setAttribute('aria-busy', 'false');
-      if (!list.querySelector('.ci-status')) list.appendChild(el('p', { class: 'ci-status', text: 'Service temporarily unavailable.' }));
+      if (!list.querySelector('.ci-status')) list.insertBefore(el('p', { class: 'ci-status', text: 'Service temporarily unavailable.' }), list.firstChild);
       return false;
+    });
+  }
+
+  function loadMore(cursor) {
+    var list = body.querySelector('.ci-list');
+    if (!list) return;
+    var forView = view;
+    var seq = ++listSeq; // supersedes any refresh already in flight
+    var button = list.querySelector('.ci-more');
+    if (button) button.disabled = true;
+    fetchPage(forView, cursor).then(function (result) {
+      if (seq !== listSeq || mode !== 'requests' || view !== forView || !list.isConnected) return;
+      if (button) button.remove();
+      if (!result.ok) { list.appendChild(el('p', { class: 'ci-status', text: errorText(result) })); list.appendChild(moreButton(cursor)); return; }
+      pagesLoaded += 1;
+      var first = null;
+      result.data.items.forEach(function (intent) {
+        var node = renderIntent(intent);
+        if (!first) first = node;
+        list.appendChild(node);
+      });
+      if (result.data.next_cursor) list.appendChild(moreButton(result.data.next_cursor));
+      if (first) first.focus();
+    }, function () {
+      if (seq !== listSeq) return;
+      if (button) button.disabled = false;
+      announce('Could not load more; try again.');
     });
   }
 
@@ -426,11 +525,18 @@
     box.addEventListener('keydown', function (e) { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); } });
     form.addEventListener('submit', function (e) {
       e.preventDefault();
-      if (!d.text.trim()) { status.textContent = 'Write a reply first.'; return; }
+      // Retry an unconfirmed reply with its exact original body (request id,
+      // text, and version), even if the record was re-rendered since.
+      var pending = d.pending;
+      if (!pending) {
+        if (!d.text.trim()) { status.textContent = 'Write a reply first.'; return; }
+        pending = d.pending = { body: JSON.stringify({ request_id: d.requestId, operator_message: d.text, version: d.version }), text: d.text };
+      }
+      var sentText = pending.text;
       send.disabled = true;
-      var sentText = d.text;
-      api('POST', '/intents/' + id + '/replies', { request_id: d.requestId, operator_message: sentText, version: d.version }).then(function (result) {
+      api('POST', '/intents/' + id + '/replies', pending.body).then(function (result) {
         send.disabled = false;
+        if (result.status < 500 && d.pending === pending) d.pending = null;
         if (result.ok) {
           // Acknowledged: clear this draft (text, request id, version) unless
           // it was edited after sending, in which case keep the newer text
@@ -448,7 +554,7 @@
           reloadIntent(id, d, code);
           return;
         }
-        status.textContent = errorText(result);
+        status.textContent = result.status >= 500 ? 'Receipt not confirmed; retry (it will not be duplicated).' : errorText(result);
         announce(status.textContent);
       }, function () {
         send.disabled = false;
@@ -507,7 +613,7 @@
     if (mode !== 'requests' || panel.hidden) return;
     stopPolling();
     pollDelay = 5000;
-    loadList(null, force, focusId).then(function (ok) {
+    loadList(force, focusId).then(function (ok) {
       pollDelay = ok ? 5000 : Math.min(60000, pollDelay * 2);
       schedule(pollDelay);
     });
@@ -519,7 +625,7 @@
       // While a reply is being typed, skip this refresh but keep polling alive.
       if (isEditingReply()) { schedule(pollDelay); return; }
       if (!body.querySelector('.ci-list')) render();
-      work = loadList(null);
+      work = loadList();
     } else if (receipt) {
       var polled = receipt;
       work = api('GET', '/intents/' + polled.intent_id).then(function (result) {
@@ -547,14 +653,9 @@
 
   // ---------- Capability detection ----------
   function start() {
-    fetch(API + '/capabilities', { credentials: 'same-origin', cache: 'no-store', headers: { Accept: 'application/json' } })
-      .then(function (res) {
-        if (!res.ok || !/application\/json/.test(res.headers.get('content-type') || '')) return null;
-        return res.json();
-      })
+    fetchCapabilities()
       .then(function (data) {
-        if (!data || data.protocol_version !== 1 || typeof data.csrf_token !== 'string' || !data.features) return;
-        if (!Array.isArray(data.type_hints)) data.type_hints = [];
+        if (!data) return;
         caps = data;
         build();
       })
