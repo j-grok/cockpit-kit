@@ -91,8 +91,11 @@
   // ---------- UI ----------
   var root, panel, title, body, live, launcherButtons = {}, lastOpener = null;
   var mode = null; // 'comment' | 'capture' | 'requests'
-  var draft = null; // { requestId, message, quote, url, type }
+  var drafts = {}; // per composer mode: { mode, requestId, message, quote, url, type }
+  var draft = null; // drafts[mode] while a composer is shown
+  var replyDrafts = {}; // per intent id: { text, requestId, version, note }
   var receipt = null; // last intent receipt shown in composer
+  var listSeq = 0; // bumps on every list load; stale responses are ignored
   var view = 'open';
   var pollTimer = null, pollDelay = 5000;
 
@@ -128,16 +131,22 @@
     document.body.appendChild(root);
     document.addEventListener('visibilitychange', function () { if (document.hidden) stopPolling(); else if (!panel.hidden) schedule(0); });
     window.addEventListener('beforeunload', function (e) {
-      if (draft && draft.message && draft.message.trim()) { e.preventDefault(); e.returnValue = ''; }
+      if (hasUnsentText()) { e.preventDefault(); e.returnValue = ''; }
     });
+  }
+
+  function hasUnsentText() {
+    var any = Object.keys(drafts).some(function (k) { return drafts[k].message.trim() !== ''; });
+    return any || Object.keys(replyDrafts).some(function (k) { return replyDrafts[k].text.trim() !== ''; });
   }
 
   function open(next, opener) {
     lastOpener = opener || lastOpener;
     if (mode !== next || next === 'requests') receipt = null;
-    if ((next === 'comment' || next === 'capture') && (!draft || draft.mode !== next)) {
-      if (draft && draft.message && draft.message.trim() && !window.confirm('Discard the unsent draft?')) next = draft.mode;
-      else draft = newDraft(next);
+    if (next === 'comment' || next === 'capture') {
+      // Each mode keeps its own in-memory draft; switching never discards one.
+      if (!drafts[next]) drafts[next] = newDraft(next);
+      draft = drafts[next];
     }
     mode = next;
     panel.hidden = false;
@@ -147,9 +156,9 @@
     schedule(next === 'requests' ? 0 : 5000);
   }
 
-  function newDraft(kind) {
+  function newDraft(kind, empty) {
     var selection = '';
-    if (kind === 'comment' && window.getSelection) {
+    if (kind === 'comment' && !empty && window.getSelection) {
       selection = String(window.getSelection()).trim().slice(0, 4000);
       if (root && root.contains(window.getSelection().anchorNode)) selection = '';
     }
@@ -227,27 +236,53 @@
       };
       if (isComment && draft.type) req.type_hint = draft.type;
       if (Object.keys(payload).length) req.payload = payload;
+      // Remember exactly what was sent; a late response must not erase edits
+      // made after sending, or a different mode's draft.
+      var submitted = draft;
+      var sent = draftSnapshot(submitted);
       api('POST', '/intents', req).then(function (result) {
         submit.disabled = false;
         if (result.status === 201 || (result.status === 200 && result.data && result.data.replayed)) {
-          receipt = { intent_id: result.data.intent_id, status: 'Received', state: result.data.state };
-          draft = newDraft(mode);
-          draft.quote = '';
-          render();
-          announce('Received. Request ' + receipt.intent_id.slice(0, 8) + ' is pending.');
-          schedule(5000);
-        } else {
+          var unchanged = draftSnapshot(submitted) === sent;
+          if (drafts[submitted.mode] === submitted) {
+            if (unchanged) drafts[submitted.mode] = newDraft(submitted.mode, true);
+            else submitted.requestId = uuid(); // edited since sending: keep text, new request next time
+          }
+          var newReceipt = { intent_id: result.data.intent_id, status: 'Received', state: result.data.state, mode: submitted.mode };
+          announce('Received. Request ' + newReceipt.intent_id.slice(0, 8) + ' is pending.');
+          if (mode === submitted.mode && !panel.hidden) {
+            receipt = newReceipt;
+            if (unchanged) {
+              draft = drafts[mode];
+              render();
+            } else {
+              showReceipt();
+            }
+            schedule(5000);
+          }
+        } else if (status.isConnected) {
           status.textContent = errorText(result);
           announce(status.textContent);
         }
       }, function () {
         submit.disabled = false;
+        if (!status.isConnected) return;
         status.textContent = 'Receipt not confirmed; retry this submission (it will not be duplicated).';
         announce(status.textContent);
       });
     });
     if (receipt) body.appendChild(renderReceipt());
     body.appendChild(form);
+  }
+
+  function draftSnapshot(d) {
+    return JSON.stringify([d.mode, d.requestId, d.message, d.quote, d.url, d.type]);
+  }
+
+  function showReceipt() {
+    var old = body.querySelector('.ci-receipt');
+    if (old) old.replaceWith(renderReceipt());
+    else body.insertBefore(renderReceipt(), body.firstChild);
   }
 
   function renderReceipt() {
@@ -274,12 +309,23 @@
     body.appendChild(el('div', { class: 'ci-list', role: 'tabpanel', 'aria-busy': 'true' }, [el('p', { class: 'ci-hint', text: 'Loading…' })]));
   }
 
-  function loadList(cursor) {
+  function isEditingReply() {
+    var active = document.activeElement;
+    return !!(active && active.closest && active.closest('.ci-reply'));
+  }
+
+  // force: replace the list even if a reply form has focus (used right after
+  // the operator's own action). focusId: intent to focus after rendering.
+  function loadList(cursor, force, focusId) {
     var list = body.querySelector('.ci-list');
     if (!list) return Promise.resolve(true);
     var forView = view;
+    var seq = ++listSeq;
     return api('GET', '/intents?view=' + forView + '&limit=50' + (cursor ? '&cursor=' + encodeURIComponent(cursor) : '')).then(function (result) {
-      if (mode !== 'requests' || view !== forView) return true;
+      // Ignore responses superseded by a newer load, a view/mode change, or
+      // that arrive while the operator is typing a reply.
+      if (seq !== listSeq || mode !== 'requests' || view !== forView || !list.isConnected) return true;
+      if (!force && isEditingReply()) return true;
       if (!cursor) list.textContent = '';
       list.setAttribute('aria-busy', 'false');
       var more = list.querySelector('.ci-more');
@@ -289,11 +335,16 @@
         list.appendChild(el('p', { class: 'ci-hint', text: forView === 'open' ? 'No active requests.' : 'No completed requests yet.' }));
       }
       result.data.items.forEach(function (intent) { list.appendChild(renderIntent(intent)); });
+      if (focusId) {
+        var target = list.querySelector('[data-intent-id="' + focusId + '"]');
+        if (target) target.focus();
+      }
       if (result.data.next_cursor) {
         list.appendChild(el('button', { type: 'button', class: 'ci-link ci-more', text: 'Load more', on: { click: function () { loadList(result.data.next_cursor); } } }));
       }
       return true;
     }, function () {
+      if (seq !== listSeq) return false;
       list.setAttribute('aria-busy', 'false');
       if (!list.querySelector('.ci-status')) list.appendChild(el('p', { class: 'ci-status', text: 'Service temporarily unavailable.' }));
       return false;
@@ -304,7 +355,7 @@
     var meta = [el('span', { class: stateClass(intent), text: intent.status }), ' ', intent.mode === 'comment' ? 'Comment' : 'Capture'];
     if (intent.type_hint) meta.push(' · ' + intent.type_hint);
     meta.push(' · ' + shortTime(intent.created_at));
-    var item = el('article', { class: 'ci-item' }, [el('p', { class: 'ci-meta' }, meta)]);
+    var item = el('article', { class: 'ci-item', 'data-intent-id': intent.intent_id, tabindex: '-1' }, [el('p', { class: 'ci-meta' }, meta)]);
     var page = intent.target && safeRoute(intent.target.page);
     if (page) item.appendChild(el('p', { class: 'ci-small' }, ['On ', el('a', { href: page, text: page })]));
     item.appendChild(el('p', { class: 'ci-message', text: intent.operator_message }));
@@ -323,43 +374,121 @@
     }
     if (intent.archive) item.appendChild(el('p', { class: 'ci-small', text: 'Archived: ' + intent.archive.reason.replace(/_/g, ' ') }));
     var actions = el('div', { class: 'ci-actions' });
-    if (intent.state === 'needs-input' || intent.state === 'open') actions.appendChild(replyForm(intent));
+    var canReply = intent.state === 'needs-input' || (intent.state === 'open' && !intent.processing.claimed);
+    if (canReply) {
+      actions.appendChild(replyForm(intent));
+    } else {
+      if (intent.state === 'open' && intent.processing.claimed) {
+        item.appendChild(el('p', { class: 'ci-small', text: 'An agent is working on this request. You can reply once it asks a question or finishes.' }));
+      }
+      var stranded = replyDrafts[intent.intent_id];
+      if (stranded && stranded.text.trim()) actions.appendChild(strandedDraft(intent, stranded));
+    }
     if (intent.state === 'addressed' || ((intent.state === 'open' || intent.state === 'needs-input') && !intent.processing.claimed)) {
       actions.appendChild(el('button', { type: 'button', class: 'ci-link', text: intent.state === 'addressed' ? 'Archive' : 'Cancel request', on: { click: function (e) {
         if (intent.state !== 'addressed' && !window.confirm('Cancel this request?')) return;
         e.currentTarget.disabled = true;
         api('POST', '/intents/' + intent.intent_id + '/archive', { request_id: uuid(), version: intent.version }).then(function (result) {
           announce(result.ok ? 'Archived.' : errorText(result));
-          schedule(0);
-        });
+          refreshList();
+        }, function () { announce('Archive not confirmed; try again.'); refreshList(); });
       } } }));
     }
     if (actions.childNodes.length) item.appendChild(actions);
     return item;
   }
 
+  // An unsent reply for a request that can no longer take one stays visible
+  // (as text) until the operator copies or discards it.
+  function strandedDraft(intent, d) {
+    return el('div', { class: 'ci-reply-stranded' }, [
+      el('p', { class: 'ci-small', text: 'Unsent reply (this request cannot take replies right now):' }),
+      el('p', { class: 'ci-msg', text: d.text }),
+      el('button', { type: 'button', class: 'ci-link', text: 'Discard unsent reply', on: { click: function () {
+        delete replyDrafts[intent.intent_id];
+        refreshList(true, intent.intent_id);
+      } } }),
+    ]);
+  }
+
   function replyForm(intent) {
-    var requestId = uuid();
+    var id = intent.intent_id;
+    var d = replyDrafts[id];
+    if (!d) d = replyDrafts[id] = { text: '', requestId: uuid(), version: intent.version, note: '' };
+    // The rendered record is what the operator is replying to.
+    d.version = intent.version;
     var box = el('textarea', { rows: 2, maxlength: 8000 });
-    var status = el('p', { class: 'ci-status' });
+    box.value = d.text;
+    box.addEventListener('input', function () { d.text = box.value; });
+    var status = el('p', { class: 'ci-status', text: d.note || '' });
     var send = el('button', { type: 'submit', class: intent.state === 'needs-input' ? 'ci-primary' : 'ci-secondary', text: intent.state === 'needs-input' ? 'Answer' : 'Add follow-up' });
     var form = el('form', { class: 'ci-reply' }, [field(intent.state === 'needs-input' ? 'Your answer' : 'Follow-up', box), send, status]);
-    box.addEventListener('focus', stopPolling);
     box.addEventListener('keydown', function (e) { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); } });
     form.addEventListener('submit', function (e) {
       e.preventDefault();
-      if (!box.value.trim()) { status.textContent = 'Write a reply first.'; return; }
+      if (!d.text.trim()) { status.textContent = 'Write a reply first.'; return; }
       send.disabled = true;
-      api('POST', '/intents/' + intent.intent_id + '/replies', { request_id: requestId, operator_message: box.value, version: intent.version }).then(function (result) {
+      var sentText = d.text;
+      api('POST', '/intents/' + id + '/replies', { request_id: d.requestId, operator_message: sentText, version: d.version }).then(function (result) {
         send.disabled = false;
-        if (result.ok) { announce('Reply received.'); schedule(0); }
-        else { status.textContent = errorText(result); announce(status.textContent); }
+        if (result.ok) {
+          // Acknowledged: clear this draft (text, request id, version) unless
+          // it was edited after sending, in which case keep the newer text
+          // under a fresh request id.
+          if (replyDrafts[id] === d) {
+            if (d.text === sentText) delete replyDrafts[id];
+            else { d.requestId = uuid(); d.note = 'Earlier text was sent; this edit is not sent yet.'; }
+          }
+          announce('Reply received.');
+          refreshList(true, id);
+          return;
+        }
+        var code = result.data && result.data.error && result.data.error.code;
+        if (code === 'version_conflict' || code === 'claim_conflict' || code === 'invalid_transition') {
+          reloadIntent(id, d, code);
+          return;
+        }
+        status.textContent = errorText(result);
+        announce(status.textContent);
       }, function () {
         send.disabled = false;
         status.textContent = 'Receipt not confirmed; retry (it will not be duplicated).';
       });
     });
     return form;
+  }
+
+  // After a conflict, fetch the current record, keep the draft, and re-render
+  // just this request so the operator can review it and retry (or see why a
+  // reply is no longer possible).
+  function reloadIntent(id, d, code) {
+    api('GET', '/intents/' + id).then(function (result) {
+      var item = body.querySelector('[data-intent-id="' + id + '"]');
+      if (!result.ok) {
+        if (item) {
+          var st = item.querySelector('.ci-reply .ci-status');
+          if (st) st.textContent = errorText(result);
+        }
+        return;
+      }
+      var fresh = result.data;
+      d.version = fresh.version;
+      var replyable = fresh.state === 'needs-input' || (fresh.state === 'open' && !fresh.processing.claimed);
+      d.note = replyable
+        ? 'This request changed (now: ' + fresh.status + '). Review it, then send again.'
+        : '';
+      var msg = replyable ? d.note : 'This request can no longer take replies (now: ' + fresh.status + '). Your text is kept below.';
+      announce(msg);
+      if (item && item.isConnected) {
+        var replacement = renderIntent(fresh);
+        item.replaceWith(replacement);
+        var again = replacement.querySelector('.ci-reply textarea');
+        if (again) again.focus();
+        else replacement.focus();
+      }
+    }, function () {
+      announce(code === 'version_conflict' ? 'This request changed; reload Requests to review it.' : 'Could not refresh this request.');
+    });
   }
 
   // ---------- Polling (only while the panel is open and the tab visible) ----------
@@ -374,23 +503,36 @@
     pollTimer = window.setTimeout(tick, delay);
   }
 
+  function refreshList(force, focusId) {
+    if (mode !== 'requests' || panel.hidden) return;
+    stopPolling();
+    pollDelay = 5000;
+    loadList(null, force, focusId).then(function (ok) {
+      pollDelay = ok ? 5000 : Math.min(60000, pollDelay * 2);
+      schedule(pollDelay);
+    });
+  }
+
   function tick() {
     var work;
     if (mode === 'requests') {
-      var active = document.activeElement;
-      if (active && active.closest && active.closest('.ci-reply')) return;
+      // While a reply is being typed, skip this refresh but keep polling alive.
+      if (isEditingReply()) { schedule(pollDelay); return; }
       if (!body.querySelector('.ci-list')) render();
       work = loadList(null);
     } else if (receipt) {
-      work = api('GET', '/intents/' + receipt.intent_id).then(function (result) {
+      var polled = receipt;
+      work = api('GET', '/intents/' + polled.intent_id).then(function (result) {
+        // Ignore responses for a receipt that is no longer the one shown.
+        if (receipt !== polled) return true;
         if (!result.ok) return false;
-        var changed = result.data.status !== receipt.status;
-        receipt.status = result.data.status;
-        receipt.state = result.data.state;
+        var changed = result.data.status !== polled.status;
+        polled.status = result.data.status;
+        polled.state = result.data.state;
         if (changed) {
           var old = body.querySelector('.ci-receipt');
           if (old) old.replaceWith(renderReceipt());
-          announce('Request ' + receipt.intent_id.slice(0, 8) + ': ' + receipt.status + '.');
+          announce('Request ' + polled.intent_id.slice(0, 8) + ': ' + polled.status + '.');
         }
         return true;
       }, function () { return false; });

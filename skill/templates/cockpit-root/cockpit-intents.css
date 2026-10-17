@@ -111,7 +111,7 @@
 .cockpit-intents .ci-message { white-space: pre-wrap; }
 .cockpit-intents .ci-msg { white-space: pre-wrap; font-size: 14px; padding-left: 10px; border-left: 2px solid var(--ci-rule); }
 .cockpit-intents .ci-result { margin-top: 6px; padding: 8px 10px; background: var(--ci-bg-2); border-radius: var(--ci-radius); }
-.cockpit-intents .ci-reply { width: 100%; }
+.cockpit-intents .ci-reply, .cockpit-intents .ci-reply-stranded { width: 100%; }
 .cockpit-intents a { color: var(--ci-ink); }
 @media (max-width: 480px) {
   .cockpit-intents .ci-panel { right: 4px; left: 4px; width: auto; bottom: 64px; }
