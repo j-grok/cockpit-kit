@@ -10,9 +10,33 @@
  * without round-tripping the file. The bulk of the register lives here.
  *
  * Source of truth for tokens: design-system.html `cockpit-data` block.
+ * Theme tokens: see the Light / Dark / System blocks below and
+ * cockpit-theme.js. Use var(--token) in pages, never literal colors.
  */
 
 :root {
+  --radius: 4px;
+  --mono: ui-monospace, "SFMono-Regular", "Cascadia Code", "Cascadia Mono", "Roboto Mono", "IBM Plex Mono", "JetBrains Mono", "Liberation Mono", Menlo, Consolas, monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/*
+ * Color themes. Pages must use these tokens instead of literal colors so
+ * every page follows the Light / Dark / System choice.
+ *
+ * - `:root` / `[data-theme="light"]`: light palette (default).
+ * - `[data-theme="dark"]`: dark palette, chosen explicitly.
+ * - `@media (prefers-color-scheme: dark)`: the same dark palette when the
+ *   preference is System (data-theme="system" or absent, e.g. without JS).
+ *
+ * Keep the two dark blocks identical and keep the same variable names in
+ * every block; the test suite checks both. Text tokens meet WCAG AA (4.5:1)
+ * against --bg, --surface, and --surface-2 in both palettes.
+ * cockpit-theme.js sets data-theme before first paint.
+ */
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
   --bg: #ecedef;
   --surface: #ffffff;
   --surface-2: #f5f6f8;
@@ -20,9 +44,11 @@
   --ink-soft: #4a5159;
   --ink-faint: #5f6670;
   --accent: #047857;
+  --accent-ink: #ffffff;
   --accent-blue: #2563eb;
   --rule: #d6d8dc;
   --rule-strong: #b4b8bd;
+  --focus: #2563eb;
   --status-reading:    #1e40af; --status-reading-bg:  #e0e7f7;
   --status-finished:   #166534; --status-finished-bg: #dcefe3;
   --status-paused:     #92400e; --status-paused-bg:   #f5e6c9;
@@ -31,9 +57,56 @@
   --status-draft:      #1e40af; --status-draft-bg:    #e0e7f7;
   --status-shipped:    #475569; --status-shipped-bg:  #dee1e5;
   --shadow: 0 0 0 1px rgba(15,18,22,0.02);
-  --radius: 4px;
-  --mono: ui-monospace, "SFMono-Regular", "Cascadia Code", "Cascadia Mono", "Roboto Mono", "IBM Plex Mono", "JetBrains Mono", "Liberation Mono", Menlo, Consolas, monospace;
-  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1013;
+  --surface: #16191d;
+  --surface-2: #1d2126;
+  --ink: #e6e8eb;
+  --ink-soft: #a9b0b8;
+  --ink-faint: #9aa1aa;
+  --accent: #34d399;
+  --accent-ink: #0e1013;
+  --accent-blue: #60a5fa;
+  --rule: #2a2f36;
+  --rule-strong: #3b414a;
+  --focus: #60a5fa;
+  --status-reading:    #93c5fd; --status-reading-bg:  #1e2a44;
+  --status-finished:   #86efac; --status-finished-bg: #163322;
+  --status-paused:     #fcd34d; --status-paused-bg:   #3a2a10;
+  --status-toread:     #d8b4fe; --status-toread-bg:   #2e1f42;
+  --status-active:     #86efac; --status-active-bg:   #163322;
+  --status-draft:      #93c5fd; --status-draft-bg:    #1e2a44;
+  --status-shipped:    #cbd5e1; --status-shipped-bg:  #2a3038;
+  --shadow: 0 0 0 1px rgba(0,0,0,0.2);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #0e1013;
+    --surface: #16191d;
+    --surface-2: #1d2126;
+    --ink: #e6e8eb;
+    --ink-soft: #a9b0b8;
+    --ink-faint: #9aa1aa;
+    --accent: #34d399;
+    --accent-ink: #0e1013;
+    --accent-blue: #60a5fa;
+    --rule: #2a2f36;
+    --rule-strong: #3b414a;
+    --focus: #60a5fa;
+    --status-reading:    #93c5fd; --status-reading-bg:  #1e2a44;
+    --status-finished:   #86efac; --status-finished-bg: #163322;
+    --status-paused:     #fcd34d; --status-paused-bg:   #3a2a10;
+    --status-toread:     #d8b4fe; --status-toread-bg:   #2e1f42;
+    --status-active:     #86efac; --status-active-bg:   #163322;
+    --status-draft:      #93c5fd; --status-draft-bg:    #1e2a44;
+    --status-shipped:    #cbd5e1; --status-shipped-bg:  #2a3038;
+    --shadow: 0 0 0 1px rgba(0,0,0,0.2);
+  }
 }
 
 * { box-sizing: border-box; }
@@ -141,6 +214,61 @@ nav.cockpit-nav .nav-search input:focus {
   background: var(--surface);
   border-color: var(--accent);
   outline: none;
+}
+
+/*
+ * Theme switcher: a native radio group styled as a segmented control.
+ * Arrow keys move between options; the checked option is bold, framed,
+ * and marked with a check so state never relies on color alone.
+ */
+.theme-switch[hidden] { display: none; }
+.theme-switch {
+  margin: 14px 0 0; padding: 14px 0 0;
+  border: 0; border-top: 1px solid var(--rule);
+  min-width: 0;
+}
+.theme-switch legend {
+  float: left; width: 100%;
+  padding: 0 10px; margin: 0 0 6px;
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.theme-switch .options {
+  clear: both;
+  display: flex; gap: 2px;
+  padding: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+.theme-switch label { flex: 1 1 auto; min-width: 0; position: relative; }
+.theme-switch input {
+  position: absolute; inset: 0;
+  margin: 0; opacity: 0; cursor: pointer;
+}
+.theme-switch label span {
+  display: block;
+  padding: 5px 4px; min-height: 28px;
+  text-align: center; white-space: nowrap;
+  font-size: 12px; line-height: 18px;
+  color: var(--ink-soft);
+  border: 1px solid transparent; border-radius: 2px;
+}
+.theme-switch input:hover + span { color: var(--ink); }
+.theme-switch input:checked + span {
+  color: var(--ink); font-weight: 700;
+  background: var(--surface);
+  border-color: var(--rule-strong);
+}
+.theme-switch input:checked + span::before { content: "\2713\00a0"; }
+.theme-switch input:focus-visible + span {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+.sr-only {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
 }
 
 .page { grid-column: 3; max-width: 880px; width: 100%; margin: 0; padding: 24px 40px 96px; min-width: 0; }
@@ -413,6 +541,12 @@ nav.page-toc { display: none; }
     font-size: 16px;
     min-height: 40px;
   }
+  nav.cockpit-nav .theme-switch {
+    flex: 1 0 100%;
+    margin: 8px 0 0; padding: 10px 0 0;
+  }
+  nav.cockpit-nav .theme-switch legend { padding: 0; }
+  nav.cockpit-nav .theme-switch label span { min-height: 36px; line-height: 24px; }
   .page { margin: 0; padding: 24px 24px 96px; }
 }
 

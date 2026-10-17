@@ -3,10 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <meta name="cockpit:source" content="self">
   <meta name="cockpit:rendered-at" content="2026-07-05T18:00:00Z">
   <title>Design System</title>
   <link rel="stylesheet" href="./cockpit.css">
+  <script src="./cockpit-theme.js"></script>
   <script src="./cockpit-intents.js" defer></script>
 </head>
 <body>
@@ -19,6 +21,15 @@
     <a href="inbox/">Inbox</a>
     <a href="search/">Search</a>
     <a href="design-system.html" aria-current="page">Design System</a>
+    <fieldset class="theme-switch" data-cockpit-theme-switch hidden>
+      <legend>Theme</legend>
+      <div class="options">
+        <label><input type="radio" name="cockpit-theme" value="system" checked><span>System</span></label>
+        <label><input type="radio" name="cockpit-theme" value="light"><span>Light</span></label>
+        <label><input type="radio" name="cockpit-theme" value="dark"><span>Dark</span></label>
+      </div>
+      <span class="sr-only" data-cockpit-theme-resolved aria-live="polite"></span>
+    </fieldset>
   </nav>
   <main class="page">
     <div class="breadcrumbs"><a href="./">Cockpit</a><span class="sep">›</span><span class="here">Design System</span></div>
@@ -26,18 +37,31 @@
       <h1>Design System</h1>
       <p>User-owned visual register for Cockpit Kit starter pages.</p>
     </header>
-    <p class="lede">The starter now follows the current Cockpit baseline: console mono body, light gray canvas, thin rule borders, a restrained green accent, and a sticky left navigation rail with search in the top-left corner.</p>
+    <p class="lede">The starter follows the Cockpit baseline: console mono body, a gray canvas, thin rule borders, a restrained green accent, and a sticky left navigation rail with search in the top-left corner. It ships a light and a dark palette; the theme switcher in the navigation picks Light, Dark, or System (follow the operating system).</p>
     <h2 class="section">Color</h2>
     <div class="panel">
-      <div class="swatches">
-        <div class="swatch bordered"><div class="chip" style="background:#ecedef"></div><div class="name">--bg</div><div class="hex">#ecedef</div></div>
-        <div class="swatch bordered"><div class="chip" style="background:#ffffff"></div><div class="name">--surface</div><div class="hex">#ffffff</div></div>
-        <div class="swatch bordered"><div class="chip" style="background:#f5f6f8"></div><div class="name">--surface-2</div><div class="hex">#f5f6f8</div></div>
-        <div class="swatch"><div class="chip" style="background:#0f1216"></div><div class="name">--ink</div><div class="hex">#0f1216</div></div>
-        <div class="swatch"><div class="chip" style="background:#4a5159"></div><div class="name">--ink-soft</div><div class="hex">#4a5159</div></div>
-        <div class="swatch"><div class="chip" style="background:#047857"></div><div class="name">--accent</div><div class="hex">#047857</div></div>
+      <p class="source-line">Chips render the active palette through <code>var(--token)</code>; switch the theme to compare. Pages must use these tokens, never literal colors, so every page follows the theme.</p>
+      <div class="swatches" style="margin-top: 12px;">
+        <div class="swatch bordered"><div class="chip" style="background:var(--bg)"></div><div class="name">--bg</div><div class="hex">light #ecedef<br>dark #0e1013</div></div>
+        <div class="swatch bordered"><div class="chip" style="background:var(--surface)"></div><div class="name">--surface</div><div class="hex">light #ffffff<br>dark #16191d</div></div>
+        <div class="swatch bordered"><div class="chip" style="background:var(--surface-2)"></div><div class="name">--surface-2</div><div class="hex">light #f5f6f8<br>dark #1d2126</div></div>
+        <div class="swatch"><div class="chip" style="background:var(--ink)"></div><div class="name">--ink</div><div class="hex">light #0f1216<br>dark #e6e8eb</div></div>
+        <div class="swatch"><div class="chip" style="background:var(--ink-soft)"></div><div class="name">--ink-soft</div><div class="hex">light #4a5159<br>dark #a9b0b8</div></div>
+        <div class="swatch"><div class="chip" style="background:var(--ink-faint)"></div><div class="name">--ink-faint</div><div class="hex">light #5f6670<br>dark #9aa1aa</div></div>
+        <div class="swatch"><div class="chip" style="background:var(--accent)"></div><div class="name">--accent</div><div class="hex">light #047857<br>dark #34d399</div></div>
+        <div class="swatch bordered"><div class="chip" style="background:var(--accent-ink)"></div><div class="name">--accent-ink</div><div class="hex">light #ffffff<br>dark #0e1013</div></div>
+        <div class="swatch"><div class="chip" style="background:var(--accent-blue)"></div><div class="name">--accent-blue</div><div class="hex">light #2563eb<br>dark #60a5fa</div></div>
+        <div class="swatch"><div class="chip" style="background:var(--rule)"></div><div class="name">--rule</div><div class="hex">light #d6d8dc<br>dark #2a2f36</div></div>
+        <div class="swatch"><div class="chip" style="background:var(--rule-strong)"></div><div class="name">--rule-strong</div><div class="hex">light #b4b8bd<br>dark #3b414a</div></div>
+        <div class="swatch"><div class="chip" style="background:var(--focus)"></div><div class="name">--focus</div><div class="hex">light #2563eb<br>dark #60a5fa</div></div>
       </div>
     </div>
+    <h2 class="section">Status badges</h2>
+    <div class="panel">
+      <div class="badges-row"><span class="badge reading">Reading</span><span class="badge finished">Finished</span><span class="badge paused">Paused</span><span class="badge to-read">To read</span><span class="badge active">Active</span><span class="badge draft">Draft</span><span class="badge shipped">Shipped</span></div>
+    </div>
+    <h2 class="section">Theme</h2>
+    <p class="source-line"><code>cockpit-theme.js</code> loads in <code>&lt;head&gt;</code> and sets <code>&lt;html data-theme&gt;</code> to <code>system</code>, <code>light</code>, or <code>dark</code> before first paint. The choice is stored in <code>localStorage</code> under <code>cockpit-theme</code>. Without JavaScript the page follows <code>prefers-color-scheme</code>.</p>
     <h2 class="section">Type</h2>
     <div class="panel">
       <dl class="type-spec">
@@ -51,7 +75,7 @@
     <a class="card" href="#">
       <h3>Card title goes here</h3>
       <p class="author">Optional secondary line</p>
-      <p>Cards are flat, bordered, short, and scannable. Hover state uses the green accent instead of a heavy shadow.</p>
+      <p>Cards are flat, bordered, short, and scannable. Hover state uses the accent instead of a heavy shadow.</p>
       <div class="tags"><span>tag</span><span>another-tag</span></div>
     </a>
     <h2 class="section">Navigation search</h2>
@@ -61,9 +85,9 @@
   <script type="application/json" id="cockpit-data">
   {
     "kind": "cockpit-design-system",
-    "schema_version": 1,
+    "schema_version": 2,
     "summary": "Starter design system page for user-owned styling.",
-    "register": "techy / light industrial console: mono body, light gray canvas, thin rule borders, restrained green accent",
+    "register": "techy industrial console: mono body, gray canvas, thin rule borders, restrained green accent; light and dark palettes",
     "tokens": {
       "type": {
         "body_family": "ui-monospace, SFMono-Regular, Cascadia Code, Cascadia Mono, Roboto Mono, IBM Plex Mono, JetBrains Mono, Liberation Mono, Menlo, Consolas, monospace",
@@ -71,16 +95,41 @@
         "line_height": 1.55
       },
       "color": {
-        "bg": "#ecedef",
-        "surface": "#ffffff",
-        "surface_2": "#f5f6f8",
-        "ink": "#0f1216",
-        "ink_soft": "#4a5159",
-        "ink_faint": "#5f6670",
-        "accent": "#047857",
-        "accent_blue": "#2563eb",
-        "rule": "#d6d8dc",
-        "rule_strong": "#b4b8bd"
+        "light": {
+          "bg": "#ecedef",
+          "surface": "#ffffff",
+          "surface_2": "#f5f6f8",
+          "ink": "#0f1216",
+          "ink_soft": "#4a5159",
+          "ink_faint": "#5f6670",
+          "accent": "#047857",
+          "accent_ink": "#ffffff",
+          "accent_blue": "#2563eb",
+          "rule": "#d6d8dc",
+          "rule_strong": "#b4b8bd",
+          "focus": "#2563eb"
+        },
+        "dark": {
+          "bg": "#0e1013",
+          "surface": "#16191d",
+          "surface_2": "#1d2126",
+          "ink": "#e6e8eb",
+          "ink_soft": "#a9b0b8",
+          "ink_faint": "#9aa1aa",
+          "accent": "#34d399",
+          "accent_ink": "#0e1013",
+          "accent_blue": "#60a5fa",
+          "rule": "#2a2f36",
+          "rule_strong": "#3b414a",
+          "focus": "#60a5fa"
+        }
+      },
+      "theme": {
+        "choices": ["system", "light", "dark"],
+        "default": "system",
+        "storage_key": "cockpit-theme",
+        "html_attribute": "data-theme",
+        "script": "cockpit-theme.js"
       },
       "layout": {
         "left_nav_px": 220,
