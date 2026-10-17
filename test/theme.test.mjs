@@ -157,6 +157,18 @@ test('theme script applies stored choice, defaults to system, and survives stora
   assert.equal(blocked.attrs.get('data-theme'), 'dark');
 });
 
+test('pinned choice survives OS changes when storage is unavailable', () => {
+  for (const pinned of ['light', 'dark']) {
+    const browser = fakeBrowser({ storageThrows: true, prefersDark: pinned === 'light' });
+    browser.choose(pinned);
+    browser.osChange(pinned !== 'dark');
+    browser.osChange(pinned === 'dark');
+    assert.equal(browser.attrs.get('data-theme'), pinned, `${pinned} must not fall back to system`);
+    assert.equal(browser.metas['color-scheme'].content, pinned);
+    assert.deepEqual(browser.radios.map((r) => r.checked), ['system', 'light', 'dark'].map((v) => v === pinned));
+  }
+});
+
 test('theme script reveals the switcher, persists choices, and tracks OS changes', () => {
   const browser = fakeBrowser({ stored: 'light' });
   assert.equal(browser.switcher.hidden, false);

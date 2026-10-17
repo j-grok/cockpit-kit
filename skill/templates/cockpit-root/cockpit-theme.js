@@ -22,7 +22,11 @@
  * - Any element with [data-cockpit-theme-switch] containing radio inputs
  *   named "cockpit-theme" becomes the switcher. It ships with the `hidden`
  *   attribute and is revealed here, so no-JS visitors never see a control
- *   that cannot work.
+ *   that cannot work. Its [data-cockpit-theme-resolved] note should carry
+ *   aria-live="polite" so screen readers hear which scheme System resolved to,
+ *   including when the OS appearance changes.
+ * - If storage is unavailable, a Light or Dark choice still holds for the
+ *   rest of the page view, including across OS appearance changes.
  *
  * No network access, no dependencies, no cookies.
  */
@@ -32,6 +36,9 @@
   var CHOICES = ['system', 'light', 'dark'];
   var root = document.documentElement;
   var media = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+  /* The active choice for this page. Kept in memory so a pinned choice
+     survives OS appearance changes even when storage is unavailable. */
+  var current = 'system';
 
   function read() {
     try {
@@ -69,6 +76,7 @@
   }
 
   function apply(choice) {
+    current = choice;
     root.setAttribute('data-theme', choice);
     setMeta('color-scheme', choice === 'system' ? 'light dark' : choice);
     var bg = window.getComputedStyle ? window.getComputedStyle(root).getPropertyValue('--bg').trim() : '';
@@ -79,7 +87,7 @@
   apply(read());
 
   if (media) {
-    var onChange = function () { if (read() === 'system') apply('system'); };
+    var onChange = function () { if (current === 'system') apply('system'); };
     if (media.addEventListener) media.addEventListener('change', onChange);
     else if (media.addListener) media.addListener(onChange);
   }
@@ -99,7 +107,7 @@
         apply(target.value);
       });
     }
-    apply(read());
+    apply(current);
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wire);
