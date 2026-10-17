@@ -41,6 +41,19 @@ function parsePort(value, source) {
   return port;
 }
 
+export function parseOrigin(value, source) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new ArgumentError(`${source} must be an exact origin such as https://cockpit.example`);
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.origin !== value.replace(/\/$/, '') || parsed.pathname !== '/' || parsed.search || parsed.hash || parsed.username) {
+    throw new ArgumentError(`${source} must be an exact origin such as https://cockpit.example`);
+  }
+  return parsed.origin;
+}
+
 function parseArgs(argv) {
   const flags = { rootArgs: [] };
   for (let index = 0; index < argv.length; index += 1) {
@@ -58,6 +71,15 @@ function parseArgs(argv) {
       flags.port = parsePort(takeValue(argv, index, arg), '--port');
       index += 1;
     } else if (arg.startsWith('--port=')) flags.port = parsePort(arg.slice('--port='.length), '--port');
+    else if (arg === '--write') flags.write = true;
+    else if (arg === '--origin') {
+      flags.origins = [...(flags.origins ?? []), parseOrigin(takeValue(argv, index, arg), '--origin')];
+      index += 1;
+    } else if (arg.startsWith('--origin=')) flags.origins = [...(flags.origins ?? []), parseOrigin(arg.slice('--origin='.length), '--origin')];
+    else if (arg === '--webhook-url') {
+      flags.webhookUrl = takeValue(argv, index, arg);
+      index += 1;
+    } else if (arg.startsWith('--webhook-url=')) flags.webhookUrl = arg.slice('--webhook-url='.length);
     else if (arg === '--no-auth') flags.auth = false;
     else if (arg === '--auth') flags.auth = true;
     else if (arg === '--root' || arg === '--cockpit-root') {
@@ -101,11 +123,17 @@ export function parseServeConfig({ argv = [], env, stderr } = {}) {
   const serveFile = readServeFile(root);
   const fileOptions = serveFileOptions(serveFile.values);
 
+  const auth = flags.auth ?? fileOptions.auth ?? true;
+  const write = flags.write === true;
+  if (write && !auth) throw new ArgumentError('serve --write requires authentication; --write --no-auth is not supported');
   return {
     root,
+    write,
+    origins: flags.origins ?? [],
+    webhookUrl: flags.webhookUrl ?? env.COCKPIT_INTENTS_WEBHOOK_URL ?? null,
     host: flags.host ?? fileOptions.host ?? DEFAULT_SERVE_HOST,
     port: flags.port ?? fileOptions.port ?? DEFAULT_SERVE_PORT,
-    auth: flags.auth ?? fileOptions.auth ?? true,
+    auth,
     configPath: resolved.configPath,
     source: resolved.source,
     serveConfigPath: serveFile.file,

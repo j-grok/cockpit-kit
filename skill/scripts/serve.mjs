@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { parseServeConfig } from '../lib/serve-config.mjs';
 import { ArgumentError, RootResolutionError, CockpitRootValidationError } from '../lib/config.mjs';
 import { assertNode20, isPathInside } from '../lib/paths.mjs';
+import { createIntentsApi, validateWebhookUrl } from '../lib/intents/http.mjs';
+import { IntentStore } from '../lib/intents/store.mjs';
 
 const cookieName = 'cockpit_serve';
 const allowedCockpitPath = '.cockpit/search-index.json';
@@ -35,6 +37,12 @@ Options:
   --port <port>       Port to bind (default: 18765)
   --auth              Enable local bearer-token cookie auth (default)
   --no-auth           Disable local bearer-token cookie auth
+  --write             Also serve the operator intents API at /api/cockpit/v1
+                      (requires auth; state lives outside the root)
+  --origin <origin>   Exact browser origin allowed to mutate (repeatable;
+                      default: the loopback origins of this server)
+  --webhook-url <url> POST a content-free wake notification on new intents
+                      and replies (or COCKPIT_INTENTS_WEBHOOK_URL)
   --help              Show this help
 `;
 }
@@ -93,11 +101,16 @@ function isCockpitPrivatePath(relative) {
   return relative === '.cockpit' || relative.startsWith('.cockpit/');
 }
 
+function isGitPath(relative) {
+  return relative.split('/').some((segment) => segment.toLowerCase() === '.git');
+}
+
 function resolveServedFile(root, rawUrl) {
   const relative = safeRelativePath(rawUrl);
   if (relative === undefined) return { status: 400 };
   const normalized = relative.endsWith('/') ? `${relative}index.html` : relative;
   if (isCockpitPrivatePath(normalized) && normalized !== allowedCockpitPath) return { status: 404 };
+  if (isGitPath(normalized)) return { status: 404 };
 
   const candidate = path.join(root, ...normalized.split('/'));
   let stat = fs.statSync(candidate, { throwIfNoEntry: false });
@@ -125,12 +138,37 @@ function requestToken(req) {
   }
 }
 
-export function createServeServer(config, { token = crypto.randomBytes(32).toString('hex') } = {}) {
+function boundPort(server, config) {
+  const address = server.address();
+  return typeof address === 'object' && address ? address.port : config.port;
+}
+
+function createWriteApi(server, config, token, env) {
+  if (!config.auth) throw new ArgumentError('serve --write requires authentication');
+  const store = new IntentStore({ root: config.root, env });
+  const webhookUrl = validateWebhookUrl(config.webhookUrl);
+  const configured = new Set(config.origins ?? []);
+  return createIntentsApi({
+    root: config.root,
+    store,
+    // Exact origins come from configuration (or this server's own loopback
+    // origins), never from request headers.
+    allowedOrigins: () => (configured.size ? configured
+      : new Set([...hostHeaderValues(config.host, boundPort(server, config))].map((host) => `http://${host}`))),
+    authenticate: (req) => (requestHasAuth(req, token) ? 'operator' : null),
+    csrfSecret: crypto.createHmac('sha256', token).update('cockpit-intents-csrf').digest(),
+    webhookUrl,
+    log: (message) => process.stderr.write(`${message}\n`),
+  });
+}
+
+export function createServeServer(config, { token = crypto.randomBytes(32).toString('hex'), env = process.env } = {}) {
+  let api = null;
   const server = http.createServer((req, res) => {
-    const address = server.address();
-    const port = typeof address === 'object' && address ? address.port : config.port;
+    const port = boundPort(server, config);
     const allowedHosts = hostHeaderValues(config.host, port);
     if (!allowedHosts.has(req.headers.host ?? '')) return responseText(res, 400, 'Bad Host header\n');
+    if (api && api.handle(req, res)) return undefined;
 
     if (config.auth) {
       const urlToken = requestToken(req);
@@ -166,6 +204,7 @@ export function createServeServer(config, { token = crypto.randomBytes(32).toStr
     if (req.method === 'HEAD') res.end();
     else stream.pipe(res);
   });
+  if (config.write) api = createWriteApi(server, config, token, env);
   server.cockpitToken = token;
   return server;
 }
@@ -197,6 +236,7 @@ async function main() {
     const boundConfig = { ...config, port };
     process.stdout.write(`Cockpit root: ${config.root}\n`);
     process.stdout.write(`Serving: ${servedUrl(boundConfig, server.cockpitToken)}\n`);
+    if (config.write) process.stdout.write('Write mode: operator intents API at /api/cockpit/v1 (state outside the root)\n');
   });
 }
 
