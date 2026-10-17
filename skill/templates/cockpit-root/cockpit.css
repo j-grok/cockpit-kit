@@ -138,6 +138,11 @@ nav.cockpit-nav {
   font-size: 13px;
   border-right: 1px solid var(--rule);
   position: sticky; top: 0; align-self: start;
+  /* Sticky makes the nav a stacking context, so the fixed theme switcher
+     inside it can only stack as high as the nav itself. Lift the nav to the
+     switcher's layer so positioned content in <main> (cards, panels) never
+     paints over the switcher or takes its clicks after scrolling. */
+  z-index: 890;
   max-height: 100vh; overflow-y: auto;
   background: var(--bg);
 }
@@ -228,6 +233,13 @@ nav.cockpit-nav .nav-search input:focus {
  * would otherwise cover content: next to the search field on narrow
  * screens, above the page column on mid widths, and above the page TOC.
  * cockpit-intents.css reads the same variable to keep its panel below it.
+ * Other fixed UI near the top of the viewport can read the same variable
+ * to stay clear of it.
+ *
+ * The switcher lives inside nav.cockpit-nav, which is sticky (and so its own
+ * stacking context) on wide screens. Keep the nav's z-index at least as high
+ * as the switcher's, and never give the nav a transform, filter, or
+ * contain, or the fixed switcher would sink below <main> or stop being fixed.
  */
 .theme-switch[hidden] { display: none; }
 .theme-switch {
