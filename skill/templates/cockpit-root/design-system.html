@@ -24,9 +24,9 @@
     <fieldset class="theme-switch" data-cockpit-theme-switch hidden>
       <legend>Theme</legend>
       <div class="options">
-        <label><input type="radio" name="cockpit-theme" value="system" checked><span>System</span></label>
-        <label><input type="radio" name="cockpit-theme" value="light"><span>Light</span></label>
-        <label><input type="radio" name="cockpit-theme" value="dark"><span>Dark</span></label>
+        <label title="System"><input type="radio" name="cockpit-theme" value="system" checked><span>System</span></label>
+        <label title="Light"><input type="radio" name="cockpit-theme" value="light"><span>Light</span></label>
+        <label title="Dark"><input type="radio" name="cockpit-theme" value="dark"><span>Dark</span></label>
       </div>
       <span class="sr-only" data-cockpit-theme-resolved aria-live="polite"></span>
     </fieldset>
@@ -37,7 +37,7 @@
       <h1>Design System</h1>
       <p>User-owned visual register for Cockpit Kit starter pages.</p>
     </header>
-    <p class="lede">The starter follows the Cockpit baseline: console mono body, a gray canvas, thin rule borders, a restrained green accent, and a sticky left navigation rail with search in the top-left corner. It ships a light and a dark palette; the theme switcher in the navigation picks Light, Dark, or System (follow the operating system).</p>
+    <p class="lede">The starter follows the Cockpit baseline: console mono body, a gray canvas, thin rule borders, a restrained green accent, and a sticky left navigation rail with search in the top-left corner. It ships a light and a dark palette; the compact theme switcher in the top-right corner picks Light, Dark, or System (follow the operating system).</p>
     <h2 class="section">Color</h2>
     <div class="panel">
       <p class="source-line">Chips render the active palette through <code>var(--token)</code>; switch the theme to compare. Pages must use these tokens, never literal colors, so every page follows the theme.</p>
@@ -61,7 +61,7 @@
       <div class="badges-row"><span class="badge reading">Reading</span><span class="badge finished">Finished</span><span class="badge paused">Paused</span><span class="badge to-read">To read</span><span class="badge active">Active</span><span class="badge draft">Draft</span><span class="badge shipped">Shipped</span></div>
     </div>
     <h2 class="section">Theme</h2>
-    <p class="source-line"><code>cockpit-theme.js</code> loads in <code>&lt;head&gt;</code> and sets <code>&lt;html data-theme&gt;</code> to <code>system</code>, <code>light</code>, or <code>dark</code> before first paint. The choice is stored in <code>localStorage</code> under <code>cockpit-theme</code>. Without JavaScript the page follows <code>prefers-color-scheme</code>.</p>
+    <p class="source-line"><code>cockpit-theme.js</code> loads in <code>&lt;head&gt;</code> and sets <code>&lt;html data-theme&gt;</code> to <code>system</code>, <code>light</code>, or <code>dark</code> before first paint. The choice is stored in <code>localStorage</code> under <code>cockpit-theme</code>. Without JavaScript the page follows <code>prefers-color-scheme</code> and the switcher stays hidden. The switcher is a radio group of three icon buttons (half circle = System, sun = Light, moon = Dark) fixed to the top-right corner inside the safe-area insets; while it is visible, <code>--cockpit-top-reserve</code> and <code>--cockpit-right-reserve</code> hold the space it needs.</p>
     <h2 class="section">Type</h2>
     <div class="panel">
       <dl class="type-spec">

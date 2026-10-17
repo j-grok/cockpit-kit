@@ -217,54 +217,95 @@ nav.cockpit-nav .nav-search input:focus {
 }
 
 /*
- * Theme switcher: a native radio group styled as a segmented control.
- * Arrow keys move between options; the checked option is bold, framed,
- * and marked with a check so state never relies on color alone.
+ * Theme switcher: a native radio group styled as a compact icon segmented
+ * control, fixed to the top-right corner of the viewport (inside the
+ * safe-area insets) so it sits in the same place on every page. Arrow keys
+ * move between options. The legend and option names stay in the
+ * accessibility tree; sighted users get icons plus a hover title. The
+ * checked option is framed and filled so state never relies on color alone.
+ *
+ * Pages that show it reserve a top band (--cockpit-top-reserve) where it
+ * would otherwise cover content: next to the search field on narrow
+ * screens, above the page column on mid widths, and above the page TOC.
+ * cockpit-intents.css reads the same variable to keep its panel below it.
  */
 .theme-switch[hidden] { display: none; }
 .theme-switch {
-  margin: 14px 0 0; padding: 14px 0 0;
-  border: 0; border-top: 1px solid var(--rule);
+  position: fixed;
+  top: calc(8px + env(safe-area-inset-top, 0px));
+  right: calc(8px + env(safe-area-inset-right, 0px));
+  z-index: 890;
+  margin: 0; padding: 0;
+  border: 0;
   min-width: 0;
 }
 .theme-switch legend {
-  float: left; width: 100%;
-  padding: 0 10px; margin: 0 0 6px;
-  font-size: 10px; font-weight: 700;
-  letter-spacing: 0.12em; text-transform: uppercase;
-  color: var(--ink-faint);
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+  padding: 0;
 }
 .theme-switch .options {
-  clear: both;
   display: flex; gap: 2px;
-  padding: 2px;
+  padding: 1px;
   background: var(--surface-2);
-  border: 1px solid var(--rule);
+  border: 1px solid var(--rule-strong);
   border-radius: var(--radius);
+  box-shadow: var(--shadow);
 }
-.theme-switch label { flex: 1 1 auto; min-width: 0; position: relative; }
+.theme-switch label { display: block; position: relative; }
 .theme-switch input {
   position: absolute; inset: 0;
+  width: 100%; height: 100%;
   margin: 0; opacity: 0; cursor: pointer;
 }
 .theme-switch label span {
-  display: block;
-  padding: 5px 4px; min-height: 28px;
-  text-align: center; white-space: nowrap;
-  font-size: 12px; line-height: 18px;
-  color: var(--ink-soft);
+  display: block; position: relative;
+  width: var(--theme-switch-size); height: var(--theme-switch-size);
+  overflow: hidden; white-space: nowrap;
+  text-indent: 200%;
+  color: var(--ink-faint);
   border: 1px solid transparent; border-radius: 2px;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
+.theme-switch label span::before {
+  content: "";
+  position: absolute; inset: 0; margin: auto;
+  width: 16px; height: 16px;
+  background-color: currentColor;
+  -webkit-mask: var(--ts-icon) center / contain no-repeat;
+  mask: var(--ts-icon) center / contain no-repeat;
+}
+.theme-switch input[value="system"] + span { --ts-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='black' d='M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1Zm0 1.5v11a5.5 5.5 0 0 1 0-11Z'/%3E%3C/svg%3E"); }
+.theme-switch input[value="light"] + span { --ts-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='3' fill='black'/%3E%3Cpath stroke='black' stroke-width='1.5' stroke-linecap='round' d='M8 1.25v1.5M8 13.25v1.5M1.25 8h1.5M13.25 8h1.5M3.2 3.2l1.07 1.07M11.73 11.73l1.07 1.07M3.2 12.8l1.07-1.07M11.73 4.27l1.07-1.07'/%3E%3C/svg%3E"); }
+.theme-switch input[value="dark"] + span { --ts-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='black' d='M6.2 1.3a6.75 6.75 0 1 0 8.5 8.5A5.5 5.5 0 0 1 6.2 1.3Z'/%3E%3C/svg%3E"); }
 .theme-switch input:hover + span { color: var(--ink); }
 .theme-switch input:checked + span {
-  color: var(--ink); font-weight: 700;
+  color: var(--ink);
   background: var(--surface);
   border-color: var(--rule-strong);
 }
-.theme-switch input:checked + span::before { content: "\2713\00a0"; }
 .theme-switch input:focus-visible + span {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .theme-switch label span { transition: none; }
+}
+@media (forced-colors: active) {
+  .theme-switch label span::before { background-color: CanvasText; }
+  .theme-switch input:checked + span { border-color: Highlight; }
+  .theme-switch input:checked + span::before { background-color: Highlight; }
+}
+@media print {
+  .theme-switch { display: none; }
+}
+/* Reserved space, set only while a switcher is visible (no-JS pages and
+   pages without one keep the plain layout). */
+:root { --theme-switch-size: 32px; }
+@media (pointer: coarse) { :root { --theme-switch-size: 36px; } }
+:root:has(.theme-switch:not([hidden])) {
+  --cockpit-top-reserve: calc(var(--theme-switch-size) + 24px + env(safe-area-inset-top, 0px));
+  --cockpit-right-reserve: calc(3 * var(--theme-switch-size) + 24px + env(safe-area-inset-right, 0px));
 }
 .sr-only {
   position: absolute; width: 1px; height: 1px; overflow: hidden;
@@ -460,6 +501,12 @@ footer.fineprint code {
 
 nav.page-toc { display: none; }
 
+/* Mid widths: the page column reaches the right edge, so keep its first
+   line below the fixed theme switcher. */
+@media (min-width: 721px) and (max-width: 1279px) {
+  .page { padding-top: max(24px, var(--cockpit-top-reserve, 24px)); }
+}
+
 @media (min-width: 1360px) {
   body {
     grid-template-columns: 220px minmax(0, 1fr) minmax(0, 880px) 32px 200px minmax(0, 1fr);
@@ -468,14 +515,14 @@ nav.page-toc { display: none; }
     display: block;
     grid-column: 5;
     width: 200px;
-    position: sticky; top: 24px;
+    position: sticky; top: max(24px, var(--cockpit-top-reserve, 24px));
     align-self: start;
     justify-self: start;
     padding: 24px 16px;
     font-family: var(--mono);
     font-size: 12px;
     border-left: 1px solid var(--rule);
-    max-height: calc(100vh - 48px);
+    max-height: calc(100vh - 24px - max(24px, var(--cockpit-top-reserve, 24px)));
     overflow-y: auto;
   }
   nav.page-toc .toc-label {
@@ -541,12 +588,12 @@ nav.page-toc { display: none; }
     font-size: 16px;
     min-height: 40px;
   }
-  nav.cockpit-nav .theme-switch {
-    flex: 1 0 100%;
-    margin: 8px 0 0; padding: 10px 0 0;
+  /* Leave the top-right corner of the search row to the theme switcher. */
+  nav.cockpit-nav .nav-search { padding-right: var(--cockpit-right-reserve, 0px); }
+  .theme-switch {
+    top: calc(12px + env(safe-area-inset-top, 0px));
+    right: calc(12px + env(safe-area-inset-right, 0px));
   }
-  nav.cockpit-nav .theme-switch legend { padding: 0; }
-  nav.cockpit-nav .theme-switch label span { min-height: 36px; line-height: 24px; }
   .page { margin: 0; padding: 24px 24px 96px; }
 }
 

@@ -239,20 +239,22 @@ This section is guidance, not a lint requirement. The starter template supports 
 <script src="../cockpit-theme.js"></script>
 ```
 
-- Then render the switcher at the end of the top-of-body `<nav>`. It ships `hidden`; the script reveals it, so it never appears where it cannot work:
+- Then render the switcher at the end of the top-of-body `<nav>`, which keeps it last in the nav's keyboard order. `cockpit.css` shows it as a compact icon control fixed in the top-right corner of the viewport, so its position in the markup does not affect layout. It ships `hidden`; the script reveals it, so it never appears where it cannot work:
 
 ```html
 <fieldset class="theme-switch" data-cockpit-theme-switch hidden>
   <legend>Theme</legend>
   <div class="options">
-    <label><input type="radio" name="cockpit-theme" value="system" checked><span>System</span></label>
-    <label><input type="radio" name="cockpit-theme" value="light"><span>Light</span></label>
-    <label><input type="radio" name="cockpit-theme" value="dark"><span>Dark</span></label>
+    <label title="System"><input type="radio" name="cockpit-theme" value="system" checked><span>System</span></label>
+    <label title="Light"><input type="radio" name="cockpit-theme" value="light"><span>Light</span></label>
+    <label title="Dark"><input type="radio" name="cockpit-theme" value="dark"><span>Dark</span></label>
   </div>
   <span class="sr-only" data-cockpit-theme-resolved aria-live="polite"></span>
 </fieldset>
 ```
 
+- Keep each `<label title>` equal to its option name: the title is the hover hint for the icon, and the visually hidden `<span>` text is the accessible name.
+- Page-level styles should leave the top-right corner alone. While a switcher is visible, `cockpit.css` sets `--cockpit-top-reserve` and `--cockpit-right-reserve` on `:root`; use them for anything else fixed near the top of the viewport.
 - The script stores the choice in `localStorage` under `cockpit-theme` (System removes the key) and sets `<html data-theme>` to `system`, `light`, or `dark`. Pages must not read or write that key for other purposes.
 - Links inside `<nav>` are still the only nav entries lint compares with `.cockpit/nav.toml`; the switcher contains no links and its text is excluded from the search index with the rest of the nav.
 

@@ -128,14 +128,15 @@ This is a lean first version of the [design](docs/design/operator-comments-and-c
 
 ## Themes: Light, Dark, System
 
-The starter knowledge repo ships a light and a dark palette and a theme switcher in the navigation of every starter page.
+The starter knowledge repo ships a light and a dark palette and a compact theme switcher on every starter page: three small icon buttons (System, Light, Dark) fixed in the top-right corner of the viewport.
 
 - **System** (default) follows the operating system's `prefers-color-scheme`, including changes while the page is open. **Light** and **Dark** pin a palette.
 - The choice is a non-private display preference stored only in the browser's `localStorage` under `cockpit-theme`. Nothing is sent anywhere.
 - `cockpit-theme.js` is a tiny same-origin script loaded synchronously in `<head>`, right after `cockpit.css`. It sets `<html data-theme="system|light|dark">` and the `color-scheme` meta before the body is painted, so a stored choice does not flash the wrong palette. No inline script is required.
+- The switcher is a native radio group, so arrow keys move between options and screen readers announce the option names; a polite live region reports which scheme System resolved to. It respects safe-area insets, has a visible focus ring, keeps at least a 32px tap target (36px on touch screens), and drops its transition under reduced motion. While it is visible, the stylesheet reserves room for it beside the search field on narrow screens and above the page column on mid widths, and the comments widget's panel stays below it.
 - `cockpit.css` defines the palettes as custom-property token sets: `:root` / `:root[data-theme="light"]`, `:root[data-theme="dark"]`, and a `@media (prefers-color-scheme: dark)` block for System. Without JavaScript, pages still follow the operating system and the switcher stays hidden.
 
-When writing or rendering pages, use the tokens (`var(--bg)`, `var(--surface)`, `var(--ink)`, `var(--ink-soft)`, `var(--accent)`, `var(--rule)`, and so on) instead of literal colors so the page follows the theme. Add new color tokens to every theme block with the same name. To opt a page into the switcher, copy the `<head>` script tag and the `fieldset.theme-switch` markup from a starter page. See the page contract for the full guidance.
+When writing or rendering pages, use the tokens (`var(--bg)`, `var(--surface)`, `var(--ink)`, `var(--ink-soft)`, `var(--accent)`, `var(--rule)`, and so on) instead of literal colors so the page follows the theme. Add new color tokens to every theme block with the same name. To opt a page into the switcher, copy the `<head>` script tag and the `fieldset.theme-switch` markup (at the end of the `<nav>`) from a starter page; the stylesheet positions it. See the page contract for the full guidance.
 
 ## AI adapters
 
