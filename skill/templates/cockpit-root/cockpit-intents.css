@@ -51,7 +51,9 @@
 .cockpit-intents .ci-panel {
   position: fixed; right: 8px; bottom: 72px; z-index: 901;
   width: min(28rem, calc(100vw - 16px));
-  max-height: calc(100vh - 88px); max-height: calc(100dvh - 88px);
+  /* Stay below any fixed top-right control (e.g. the theme switcher). */
+  max-height: calc(100vh - 72px - var(--cockpit-top-reserve, 16px));
+  max-height: calc(100dvh - 72px - var(--cockpit-top-reserve, 16px));
   overflow-y: auto; overscroll-behavior: contain;
   background: var(--ci-bg); color: var(--ci-ink);
   border: 1px solid var(--ci-rule); border-radius: var(--radius-lg, var(--ci-radius));
@@ -114,7 +116,11 @@
 .cockpit-intents .ci-reply, .cockpit-intents .ci-reply-stranded { width: 100%; }
 .cockpit-intents a { color: var(--ci-ink); }
 @media (max-width: 480px) {
-  .cockpit-intents .ci-panel { right: 4px; left: 4px; width: auto; bottom: 64px; }
+  .cockpit-intents .ci-panel {
+    right: 4px; left: 4px; width: auto; bottom: 64px;
+    max-height: calc(100vh - 64px - var(--cockpit-top-reserve, 16px));
+    max-height: calc(100dvh - 64px - var(--cockpit-top-reserve, 16px));
+  }
   .cockpit-intents .ci-bar { right: 6px; bottom: 6px; }
   .cockpit-intents .ci-launch { padding: 0 12px; }
 }

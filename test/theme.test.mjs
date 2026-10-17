@@ -63,12 +63,42 @@ test('starter pages render an accessible theme switcher inside the nav', () => {
     const switcher = nav.match(/<fieldset class="theme-switch" data-cockpit-theme-switch hidden>([\s\S]*?)<\/fieldset>/);
     assert.ok(switcher, `${rel}: switcher missing from nav`);
     assert.match(switcher[1], /<legend>Theme<\/legend>/, `${rel}: switcher needs a legend`);
-    const values = [...switcher[1].matchAll(/<label><input type="radio" name="cockpit-theme" value="([a-z]+)"( checked)?><span>([A-Za-z]+)<\/span><\/label>/g)];
-    assert.deepEqual(values.map((m) => m[1]), ['system', 'light', 'dark'], `${rel}: radio values`);
-    assert.deepEqual(values.map((m) => m[3]), ['System', 'Light', 'Dark'], `${rel}: visible labels`);
-    assert.deepEqual(values.map((m) => Boolean(m[2])), [true, false, false], `${rel}: System is the default`);
+    const values = [...switcher[1].matchAll(/<label title="([A-Za-z]+)"><input type="radio" name="cockpit-theme" value="([a-z]+)"( checked)?><span>([A-Za-z]+)<\/span><\/label>/g)];
+    assert.deepEqual(values.map((m) => m[2]), ['system', 'light', 'dark'], `${rel}: radio values`);
+    assert.deepEqual(values.map((m) => m[4]), ['System', 'Light', 'Dark'], `${rel}: option names`);
+    assert.deepEqual(values.map((m) => m[1]), ['System', 'Light', 'Dark'], `${rel}: hover titles match option names`);
+    assert.deepEqual(values.map((m) => Boolean(m[3])), [true, false, false], `${rel}: System is the default`);
     assert.match(switcher[1], /<span class="sr-only" data-cockpit-theme-resolved aria-live="polite"><\/span>/, `${rel}: resolved-scheme note must be a polite live region`);
   }
+});
+
+function rule(source, selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`(?:^|\\n)\\s*${escaped}\\s*\\{([^}]*)\\}`).exec(source);
+  assert.ok(match, `missing rule ${selector}`);
+  return match[1];
+}
+
+test('theme switcher is a compact control fixed to the top-right corner', () => {
+  const base = rule(css, '.theme-switch');
+  assert.match(base, /position:\s*fixed;/);
+  assert.match(base, /top:\s*calc\([^;]*env\(safe-area-inset-top/);
+  assert.match(base, /right:\s*calc\([^;]*env\(safe-area-inset-right/);
+  const z = Number(base.match(/z-index:\s*(\d+)/)?.[1]);
+  const intentsCss = fs.readFileSync(path.join(templateRoot, 'cockpit-intents.css'), 'utf8');
+  const widgetZ = Math.min(...[...intentsCss.matchAll(/z-index:\s*(\d+)/g)].map((m) => Number(m[1])));
+  assert.ok(z > 0 && z < widgetZ, 'switcher stays below the comments widget so its open panel is never covered');
+  assert.match(intentsCss, /max-height:\s*calc\(100dvh - 72px - var\(--cockpit-top-reserve/, 'comments panel keeps clear of the reserved top band');
+
+  const size = Number(css.match(/:root\s*\{\s*--theme-switch-size:\s*(\d+)px/)?.[1]);
+  assert.ok(size >= 32, `tap target is ${size}px`);
+  assert.match(rule(css, '.theme-switch label span'), /width:\s*var\(--theme-switch-size\);[\s\S]*height:\s*var\(--theme-switch-size\);/);
+  assert.match(rule(css, '.theme-switch input:focus-visible + span'), /outline:\s*2px solid var\(--focus\)/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.theme-switch label span\s*\{\s*transition:\s*none;/);
+  assert.match(css, /:root:has\(\.theme-switch:not\(\[hidden\]\)\)\s*\{[^}]*--cockpit-top-reserve:[^}]*--cockpit-right-reserve:/);
+  assert.match(css, /nav\.cockpit-nav \.nav-search\s*\{\s*padding-right:\s*var\(--cockpit-right-reserve/, 'narrow screens keep the search field clear of the switcher');
+  assert.match(rule(css, '.page'), /padding:/);
+  assert.match(css, /\.page\s*\{\s*padding-top:\s*max\(24px, var\(--cockpit-top-reserve/, 'mid widths keep the page column clear of the switcher');
 });
 
 test('light and dark token sets define the same variables', () => {
