@@ -67,6 +67,7 @@ test('starter pages render an accessible theme switcher inside the nav', () => {
     assert.deepEqual(values.map((m) => m[1]), ['system', 'light', 'dark'], `${rel}: radio values`);
     assert.deepEqual(values.map((m) => m[3]), ['System', 'Light', 'Dark'], `${rel}: visible labels`);
     assert.deepEqual(values.map((m) => Boolean(m[2])), [true, false, false], `${rel}: System is the default`);
+    assert.match(switcher[1], /<span class="sr-only" data-cockpit-theme-resolved aria-live="polite"><\/span>/, `${rel}: resolved-scheme note must be a polite live region`);
   }
 });
 

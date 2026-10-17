@@ -248,7 +248,7 @@ This section is guidance, not a lint requirement. The starter template supports 
     <label><input type="radio" name="cockpit-theme" value="light"><span>Light</span></label>
     <label><input type="radio" name="cockpit-theme" value="dark"><span>Dark</span></label>
   </div>
-  <span class="sr-only" data-cockpit-theme-resolved></span>
+  <span class="sr-only" data-cockpit-theme-resolved aria-live="polite"></span>
 </fieldset>
 ```
 
