@@ -224,6 +224,37 @@ Lint codes:
 | `invalid-search-index` | warning | The search index exists but cannot be parsed or lacks required top-level fields. |
 | `stale-search-index` | warning | A page has `cockpit:rendered-at` newer than the index `generated_at`, or the set of discovered pages does not match the set of indexed `path` values. |
 
+## Guidance: color themes
+
+This section is guidance, not a lint requirement. The starter template supports Light, Dark, and System (default) themes, and pages should keep working in all three.
+
+- Use the color tokens from `cockpit.css` (`--bg`, `--surface`, `--surface-2`, `--ink`, `--ink-soft`, `--ink-faint`, `--accent`, `--accent-ink`, `--rule`, `--rule-strong`, `--focus`, and the `--status-*` pairs) for every color in page-level `<style>` blocks and `style` attributes. Do not hard-code hex, `rgb()`, or `hsl()` colors in pages; a literal color is correct in only one theme.
+- Need a new color? Add a token with the same name to every theme block in `cockpit.css` (`:root` / `:root[data-theme="light"]`, `:root[data-theme="dark"]`, and the `@media (prefers-color-scheme: dark)` block, which must mirror the dark block), keeping text at WCAG AA contrast (4.5:1) against `--bg`, `--surface`, and `--surface-2`.
+- To include the switcher, load the theme script synchronously in `<head>` after the stylesheet, with a depth-correct same-origin path, and declare both schemes:
+
+```html
+<meta name="color-scheme" content="light dark">
+<link rel="stylesheet" href="../cockpit.css">
+<script src="../cockpit-theme.js"></script>
+```
+
+- Then render the switcher at the end of the top-of-body `<nav>`. It ships `hidden`; the script reveals it, so it never appears where it cannot work:
+
+```html
+<fieldset class="theme-switch" data-cockpit-theme-switch hidden>
+  <legend>Theme</legend>
+  <div class="options">
+    <label><input type="radio" name="cockpit-theme" value="system" checked><span>System</span></label>
+    <label><input type="radio" name="cockpit-theme" value="light"><span>Light</span></label>
+    <label><input type="radio" name="cockpit-theme" value="dark"><span>Dark</span></label>
+  </div>
+  <span class="sr-only" data-cockpit-theme-resolved></span>
+</fieldset>
+```
+
+- The script stores the choice in `localStorage` under `cockpit-theme` (System removes the key) and sets `<html data-theme>` to `system`, `light`, or `dark`. Pages must not read or write that key for other purposes.
+- Links inside `<nav>` are still the only nav entries lint compares with `.cockpit/nav.toml`; the switcher contains no links and its text is excluded from the search index with the rest of the nav.
+
 ## Valid Cockpit root
 
 A valid Cockpit root is a directory that contains a `.cockpit/` directory holding `.cockpit/sources.toml`. `sources.toml` is the one required manifest; it may be empty but must exist. `.cockpit/nav.toml` and `.cockpit/serve.toml` are optional. Write-capable scripts, `serve.mjs`, and `lint.mjs` validate this before operating on the root.
