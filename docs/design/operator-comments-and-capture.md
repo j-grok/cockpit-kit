@@ -1,6 +1,6 @@
 # Operator comments and capture lifecycle
 
-Status: proposed for operator review. Design only; no feature is implemented or enabled by this document.
+Status: proposed for operator review. A lean first version is implemented on branch `feat/operator-comments-mvp` (operator chose "lean first version, harden later"); see [MVP implementation status](#mvp-implementation-status). The rest of this document remains the target design.
 
 Tracks [issue #10](https://github.com/autojeremy/cockpit-kit/issues/10) within [epic #9](https://github.com/autojeremy/cockpit-kit/issues/9). Baseline: [discussion #3](https://github.com/autojeremy/cockpit-kit/discussions/3), including both follow-ups. Shared identity baseline: [discussion #4](https://github.com/autojeremy/cockpit-kit/discussions/4), including both follow-ups, and [design issue #12](https://github.com/autojeremy/cockpit-kit/issues/12).
 
@@ -389,3 +389,36 @@ Each slice must include its acceptance checks before the next starts. Rollback d
 **Operator review still required:** approve the single-host/cooperative-writer security model and conservative manual recovery; approve retention/capacity/backup defaults; choose whether both transport adapters are required for the first slice; agree with #12 on ID grammar and the eventual upstream identity boundary. These are explicit proposed defaults, not claims of operator acceptance. The existing discussions favor these directions but do not constitute approval of this full protocol.
 
 **Implementation-blocking gates:** review this design with the operator; reconcile shared identity before enabling ID/item targeting; prove the filesystem durability/fencing and real proxy auth contracts before enabling writes in those modes. No implementation sub-issues, rollout, feature enablement, issue closure, or merge is authorized by the initial design task.
+
+## MVP implementation status
+
+The operator chose a lean first version, hardened later. It implements the page-level loop end to end (comment/capture → receipt → agent claim → question/answer → addressed result with verified commit → Done view) and keeps the trust boundary, but deliberately defers much of sections 4–7.
+
+**Implemented**
+
+| Area | What exists |
+|---|---|
+| Modules | `skill/lib/intents/{core,store,http}.mjs` (shared validation, lifecycle, storage, router); `skill/scripts/intents-service.mjs` (standalone loopback adapter); `serve.mjs --write` (integrated adapter); `skill/scripts/intents.mjs` (consumer CLI). |
+| API | `GET /capabilities`, `POST /intents`, `GET /intents/:id`, `GET /intents?view=open|history` (cursor pagination, max 100), `POST /intents/:id/replies`, `POST /intents/:id/archive`. Errors use the section 3 envelope; responses are `no-store`, `nosniff`, `no-referrer`, no CORS. |
+| Idempotency | `request_id` per principal; exact replay returns `200 replayed: true`, changed content `409 idempotency_conflict`; replay is checked before target revalidation. Replies and archive also take request IDs. |
+| Validation | Unknown fields rejected at every fixed level (so `provenance`, `output_path`, `state`, etc. are refused); byte limits; UUIDs; payload limited to `url`/`text`/`selected_text`/`title`; http(s) URLs without userinfo; type hints are hints only. |
+| Targets | Normalized server-absolute routes only; no dot segments, `%`, `\`, query/fragment, hidden or excluded segments; realpath containment; must be an existing file. Server records `observed.html_sha256`. Result `--page` refs use the same validator. |
+| Lifecycle | `open`, `needs-input`, `addressed`, `archived`. Claim (one per intent, random token stored hashed, attempts counter), release, ask → needs-input, operator reply → open, resolve (`changed` requires a commit that `git rev-parse` verifies when the root is a Git repo), operator archive/cancel (refused while claimed), agent archive (addressed, or claimed). Optional `version` CAS on replies/archive. 20 follow-ups max. |
+| Storage | One JSON snapshot per repo at `${XDG_STATE_HOME:-~/.local/state}/cockpit-kit/<sha256(realpath)[0:16]>/intents.json`; directory `0700`, file `0600`, exclusive temp file + rename; refuses a state dir inside (or containing) the root; a short mkdir lock per read-modify-write so the service(s) and CLI can share the file. |
+| Auth | `serve --write`: existing cookie auth (refuses `--no-auth`), CSRF = HMAC of the server token, allowed origins = configured `--origin` or the server's own loopback origins. Standalone: proxy-injected shared secret (`X-Cockpit-Proxy-Secret`, file `0600`) plus optional `X-Cockpit-Principal`; direct requests without the secret get 401. Both: exact Origin, `Sec-Fetch-Site` if present, CSRF header, `application/json`, 32 KiB streamed limit, 10 s body timeout, 30/min (burst 10) per principal, credentials in URLs rejected. |
+| Static safety | No intent data is written under the root; `serve.mjs` now also 404s any `.git` path segment. Tests scan the whole root and the regenerated search index for leakage. |
+| Browser | `cockpit-intents.js`/`.css` in the starter template; capability-detected; text nodes only; labels, keyboard submit, Escape to close with focus return, polite live region, tabs with arrow keys, no localStorage; polling only while the panel is open and the tab visible (5 s, backoff to 60 s); checked at 320 px. |
+| Wake hook | Opt-in `--webhook-url` / `COCKPIT_INTENTS_WEBHOOK_URL`; POSTs `{event, intent_id, kind, at}` on create/reply only, 3 s timeout, failures logged and ignored. |
+
+**Deferred hardening (not in the MVP)**
+
+- File and directory `fsync`, the durability hold, startup quarantine of orphan temp files, and the real filesystem fault-injection matrix (section 5).
+- Exclusive service ownership lock (`service.lock/`); today two services on one repo coordinate only through the per-mutation lock. Stale-lock removal is time-based (30 s), not proof that the holder stopped.
+- Repo registration UUIDs and origin mapping in private config; the MVP namespaces by a hash of the root realpath, so moving the root orphans its queue.
+- Capacity/admission accounting, the 64 MiB/10,000-intent limits, retention, auto-archive, purge, tombstones and `410 intent_purged`, export/backup/restore.
+- Duplicate JSON key detection and nesting-depth limit (duplicate keys currently resolve last-wins via `JSON.parse`).
+- Snapshot tokens and `GET /target`; `409 target_changed` at submission (the MVP records the server-observed digest at acceptance instead).
+- Write-mode `POST /session` login with a one-time secret; `serve --write` still reuses the read-only server's `?token=` cookie bootstrap. Cursors are opaque but not HMAC-authenticated.
+- Consumer socket and separate consumer credential: the CLI reads/writes the state file directly under the OS account (the section 5 same-UID limit applies). Claim heartbeats, recovery-required display, repo-wide single-claim fence, operation-ID dedupe for consumer calls, `prepared_result`, commit trailers, reachability-on-branch verification, the cooperative writer lock, and crash reconciliation (section 7).
+- Cancellation-requested-while-claimed flow, retry scheduling (1/5/30 min), and `completed_then_cancelled`.
+- Item targeting and page IDs (section 8), phone/PWA capture.

@@ -23,6 +23,7 @@ Allowed:
 - Inline JavaScript for page-local behavior.
 - Same-origin script files that live inside the Cockpit root.
 - External images, with caution. They are tolerated because a missing image degrades the page less severely than missing CSS or JavaScript.
+- The optional operator request widget, `<script src="/cockpit-intents.js" defer></script>` (or a depth-correct relative path). It is generic code: it fetches private request data from the same-origin `/api/cockpit/v1` service after authentication and hides itself when that service is absent. Pages must never embed request contents, counts, receipt IDs, or other queue-derived data.
 
 Forbidden:
 
