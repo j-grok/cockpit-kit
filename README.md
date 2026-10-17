@@ -114,6 +114,16 @@ node ~/.local/share/cockpit-kit/skill/scripts/intents.mjs resolve <id> --claim <
 
 Optional wake hook: `--webhook-url <url>` or `COCKPIT_INTENTS_WEBHOOK_URL` makes either server POST `{"event","intent_id","kind","at"}` (no request content) when a new intent or operator reply arrives. Failures are logged and ignored.
 
+If the receiver needs an auth key, add `--webhook-headers-file <path>` (or `COCKPIT_INTENTS_WEBHOOK_HEADERS_FILE=<path>`). It works with both `intents-service.mjs` and `serve.mjs --write`, and requires a webhook URL. The file holds one `Header-Name: value` per line; blank lines and `#` comments are ignored:
+
+```text
+# chmod 600 this file
+Authorization: Bearer <your-receiver-token>
+X-Example-Key: <another-value>
+```
+
+The file is read once at startup. The server refuses to start if the file is a symlink, is not owned by the service user, or has any group or world permission bits (use `chmod 600`). It also refuses invalid header names, CR/LF or other control characters in values, empty values, duplicates, and headers the service manages itself (`Host`, `Content-Type`, `Content-Length`, ...). The headers go on every webhook POST. Their values are never logged or included in error messages, and startup output shows only how many headers were loaded.
+
 This is a lean first version of the [design](docs/design/operator-comments-and-capture.md); see its "MVP implementation status" section for what is deferred.
 
 ## AI adapters

@@ -109,12 +109,13 @@ export function validateWebhookUrl(value) {
 }
 
 // Minimal, content-free wake notification. Failures are logged and ignored.
-export function notifyWebhook(url, event, intent, { log = () => {} } = {}) {
+// `headers` (from --webhook-headers-file) are sent as-is and never logged.
+export function notifyWebhook(url, event, intent, { log = () => {}, headers = {} } = {}) {
   if (!url) return Promise.resolve(false);
   const body = JSON.stringify({ event, intent_id: intent.intent_id, kind: intent.mode, at: new Date().toISOString() });
   return fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...headers, 'Content-Type': 'application/json' },
     body,
     redirect: 'manual',
     signal: AbortSignal.timeout(3000),
@@ -127,7 +128,7 @@ export function notifyWebhook(url, event, intent, { log = () => {} } = {}) {
   });
 }
 
-export function createIntentsApi({ root, store, allowedOrigins, authenticate, csrfSecret, webhookUrl = null, log = () => {} }) {
+export function createIntentsApi({ root, store, allowedOrigins, authenticate, csrfSecret, webhookUrl = null, webhookHeaders = {}, log = () => {} }) {
   if (!allowedOrigins || (typeof allowedOrigins !== 'function' && allowedOrigins.size === 0)) throw new Error('createIntentsApi requires at least one allowed origin');
   // A static allowlist is validated once here; a function (serve --write
   // loopback default) must return already-normalized origins.
@@ -185,7 +186,7 @@ export function createIntentsApi({ root, store, allowedOrigins, authenticate, cs
       const body = await mutationBody(req, principal);
       const { intent, replayed } = store.mutate((state) => createIntent(state, root, body, { principal }));
       const location = `${API_PREFIX}/intents/${intent.intent_id}`;
-      if (!replayed) notifyWebhook(webhookUrl, 'intent.created', intent, { log });
+      if (!replayed) notifyWebhook(webhookUrl, 'intent.created', intent, { log, headers: webhookHeaders });
       return sendJson(res, replayed ? 200 : 201, {
         intent_id: intent.intent_id,
         request_id: intent.request_id,
@@ -218,7 +219,7 @@ export function createIntentsApi({ root, store, allowedOrigins, authenticate, cs
       if (action === '/replies' && method === 'POST') {
         const body = await mutationBody(req, principal);
         const { intent, replayed } = store.mutate((state) => replyIntent(state, id, body, { principal }));
-        if (!replayed) notifyWebhook(webhookUrl, 'intent.reply', intent, { log });
+        if (!replayed) notifyWebhook(webhookUrl, 'intent.reply', intent, { log, headers: webhookHeaders });
         return sendJson(res, 200, { intent_id: intent.intent_id, state: intent.state, status: publicIntent(intent).status, version: intent.version, replayed });
       }
       if (action === '/archive' && method === 'POST') {

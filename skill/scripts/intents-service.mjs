@@ -17,6 +17,7 @@ import { assertNode20, expandHome } from '../lib/paths.mjs';
 import { normalizeOrigin, normalizeOrigins } from '../lib/intents/origins.mjs';
 import { createIntentsApi, validateWebhookUrl } from '../lib/intents/http.mjs';
 import { IntentStore } from '../lib/intents/store.mjs';
+import { loadWebhookHeaders } from '../lib/intents/webhook-headers.mjs';
 
 export const DEFAULT_INTENTS_PORT = 18767;
 const PRINCIPAL_RE = /^[A-Za-z0-9@._+-]{1,128}$/;
@@ -32,6 +33,9 @@ Options:
   --port <port>               Port to bind (default: ${DEFAULT_INTENTS_PORT})
   --proxy-secret-file <path>  Shared proxy secret (default: <state-dir>/proxy-secret, created 0600)
   --webhook-url <url>         POST {event,intent_id,kind} on new intents/replies (or COCKPIT_INTENTS_WEBHOOK_URL)
+  --webhook-headers-file <path>
+                              Extra headers for every webhook POST, one "Name: value" per line;
+                              must be chmod 600 (or COCKPIT_INTENTS_WEBHOOK_HEADERS_FILE)
   --help                      Show this help
 `;
 }
@@ -43,7 +47,7 @@ function take(argv, i, arg) {
 }
 
 export function parseServiceArgs(argv, env) {
-  const options = { rootArgs: [], origins: [], host: '127.0.0.1', port: DEFAULT_INTENTS_PORT, webhookUrl: env.COCKPIT_INTENTS_WEBHOOK_URL ?? null };
+  const options = { rootArgs: [], origins: [], host: '127.0.0.1', port: DEFAULT_INTENTS_PORT, webhookUrl: env.COCKPIT_INTENTS_WEBHOOK_URL ?? null, webhookHeadersFile: env.COCKPIT_INTENTS_WEBHOOK_HEADERS_FILE || null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const [name, inline] = arg.includes('=') ? [arg.slice(0, arg.indexOf('=')), arg.slice(arg.indexOf('=') + 1)] : [arg, undefined];
@@ -65,6 +69,7 @@ export function parseServiceArgs(argv, env) {
       if (!Number.isInteger(options.port) || options.port < 0 || options.port > 65535 || String(options.port) !== raw) throw new ArgumentError('--port must be 0-65535');
     } else if (name === '--proxy-secret-file') options.secretFile = path.resolve(expandHome(value(), env));
     else if (name === '--webhook-url') options.webhookUrl = value();
+    else if (name === '--webhook-headers-file') options.webhookHeadersFile = value();
     else throw new ArgumentError(`Unknown option: ${arg}`);
   }
   return options;
@@ -93,7 +98,7 @@ function safeEqual(a, b) {
   return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
-export function createIntentsService({ root, origins, secret, host = '127.0.0.1', port = DEFAULT_INTENTS_PORT, webhookUrl = null, env = process.env, log = () => {} }) {
+export function createIntentsService({ root, origins, secret, host = '127.0.0.1', port = DEFAULT_INTENTS_PORT, webhookUrl = null, webhookHeaders = {}, env = process.env, log = () => {} }) {
   const allowed = normalizeOrigins(origins);
   if (!allowed.length) throw new ArgumentError('intents-service requires at least one --origin');
   if (!secret) throw new Error('intents-service requires a proxy secret');
@@ -110,6 +115,7 @@ export function createIntentsService({ root, origins, secret, host = '127.0.0.1'
     },
     csrfSecret: crypto.createHmac('sha256', secret).update('cockpit-intents-csrf').digest(),
     webhookUrl: validateWebhookUrl(webhookUrl),
+    webhookHeaders,
     log,
   });
   server = http.createServer((req, res) => {
@@ -141,8 +147,13 @@ async function main() {
   const store = new IntentStore({ root, env: process.env });
   const secretFile = options.secretFile ?? path.join(store.stateDir, 'proxy-secret');
   const secret = loadOrCreateSecret(secretFile);
+  let webhookHeaders = {};
+  if (options.webhookHeadersFile) {
+    if (!options.webhookUrl) throw new ArgumentError('--webhook-headers-file requires --webhook-url (or COCKPIT_INTENTS_WEBHOOK_URL)');
+    webhookHeaders = loadWebhookHeaders(path.resolve(expandHome(options.webhookHeadersFile, process.env)));
+  }
   const server = createIntentsService({
-    root, origins: options.origins, secret, host: options.host, port: options.port, webhookUrl: options.webhookUrl,
+    root, origins: options.origins, secret, host: options.host, port: options.port, webhookUrl: options.webhookUrl, webhookHeaders,
     log: (message) => process.stderr.write(`${message}\n`),
   });
   server.on('error', (error) => {
@@ -156,6 +167,7 @@ async function main() {
     process.stdout.write(`Allowed origins: ${server.allowedOrigins.join(' ')}\n`);
     process.stdout.write(`State: ${store.file}\n`);
     process.stdout.write(`Proxy secret file: ${secretFile}\n`);
+    if (options.webhookUrl) process.stdout.write(`Webhook: enabled${Object.keys(webhookHeaders).length ? ` with ${Object.keys(webhookHeaders).length} extra header(s) (values not shown)` : ''}\n`);
   });
 }
 

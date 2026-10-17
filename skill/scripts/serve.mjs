@@ -6,9 +6,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseServeConfig } from '../lib/serve-config.mjs';
 import { ArgumentError, RootResolutionError, CockpitRootValidationError } from '../lib/config.mjs';
-import { assertNode20, isPathInside } from '../lib/paths.mjs';
+import { assertNode20, expandHome, isPathInside } from '../lib/paths.mjs';
 import { createIntentsApi, validateWebhookUrl } from '../lib/intents/http.mjs';
 import { IntentStore } from '../lib/intents/store.mjs';
+import { loadWebhookHeaders } from '../lib/intents/webhook-headers.mjs';
 
 const cookieName = 'cockpit_serve';
 const allowedCockpitPath = '.cockpit/search-index.json';
@@ -43,6 +44,10 @@ Options:
                       origin (default: this server's loopback origins)
   --webhook-url <url> POST a content-free wake notification on new intents
                       and replies (or COCKPIT_INTENTS_WEBHOOK_URL)
+  --webhook-headers-file <path>
+                      Extra webhook headers, one "Name: value" per line,
+                      file must be chmod 600 (or
+                      COCKPIT_INTENTS_WEBHOOK_HEADERS_FILE)
   --help              Show this help
 `;
 }
@@ -148,10 +153,17 @@ function boundPort(server, config) {
   return typeof address === 'object' && address ? address.port : config.port;
 }
 
+export function resolveWebhookHeaders(webhookUrl, file, env = process.env) {
+  if (!file) return {};
+  if (!webhookUrl) throw new ArgumentError('--webhook-headers-file requires --webhook-url (or COCKPIT_INTENTS_WEBHOOK_URL)');
+  return loadWebhookHeaders(path.resolve(expandHome(file, env)));
+}
+
 function createWriteApi(server, config, token, env) {
   if (!config.auth) throw new ArgumentError('serve --write requires authentication');
   const store = new IntentStore({ root: config.root, env });
   const webhookUrl = validateWebhookUrl(config.webhookUrl);
+  const webhookHeaders = resolveWebhookHeaders(webhookUrl, config.webhookHeadersFile, env);
   const configured = new Set(config.origins ?? []);
   return createIntentsApi({
     root: config.root,
@@ -163,6 +175,7 @@ function createWriteApi(server, config, token, env) {
     authenticate: (req) => (requestHasAuth(req, token) ? 'operator' : null),
     csrfSecret: crypto.createHmac('sha256', token).update('cockpit-intents-csrf').digest(),
     webhookUrl,
+    webhookHeaders,
     log: (message) => process.stderr.write(`${message}\n`),
   });
 }

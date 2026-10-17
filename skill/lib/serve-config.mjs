@@ -68,6 +68,10 @@ function parseArgs(argv) {
       flags.origins = [...(flags.origins ?? []), parseOrigin(takeValue(argv, index, arg), '--origin')];
       index += 1;
     } else if (arg.startsWith('--origin=')) flags.origins = [...(flags.origins ?? []), parseOrigin(arg.slice('--origin='.length), '--origin')];
+    else if (arg === '--webhook-headers-file') {
+      flags.webhookHeadersFile = takeValue(argv, index, arg);
+      index += 1;
+    } else if (arg.startsWith('--webhook-headers-file=')) flags.webhookHeadersFile = arg.slice('--webhook-headers-file='.length);
     else if (arg === '--webhook-url') {
       flags.webhookUrl = takeValue(argv, index, arg);
       index += 1;
@@ -123,6 +127,7 @@ export function parseServeConfig({ argv = [], env, stderr } = {}) {
     write,
     origins: normalizeOrigins(flags.origins ?? []),
     webhookUrl: flags.webhookUrl ?? env.COCKPIT_INTENTS_WEBHOOK_URL ?? null,
+    webhookHeadersFile: flags.webhookHeadersFile ?? (env.COCKPIT_INTENTS_WEBHOOK_HEADERS_FILE || null),
     host: flags.host ?? fileOptions.host ?? DEFAULT_SERVE_HOST,
     port: flags.port ?? fileOptions.port ?? DEFAULT_SERVE_PORT,
     auth,

@@ -694,3 +694,106 @@ test('intents.mjs list exposes cursors and --all walks every page', () => {
   assert.equal(run('list', '--limit', '0').status, 1);
   assert.equal(run('list', '--all', '--cursor', first.next_cursor).status, 1);
 });
+
+// ---------- webhook headers file ----------
+
+function headersFile(text, mode = 0o600) {
+  const file = path.join(tempDir('cockpit-intents-hooks-'), 'webhook-headers');
+  fs.writeFileSync(file, text, { mode });
+  fs.chmodSync(file, mode);
+  return file;
+}
+
+test('webhook headers file: parses names/values, enforces permissions, never echoes values', async () => {
+  const { loadWebhookHeaders, parseWebhookHeaders } = await import('../skill/lib/intents/webhook-headers.mjs');
+  const SECRET_VALUE = 'placeholder-secret-value-123';
+  const good = headersFile(`# auth for the wake receiver\nAuthorization: Bearer ${SECRET_VALUE}\n\nX-Example-Key:  ${SECRET_VALUE}  \n`);
+  assert.deepEqual(loadWebhookHeaders(good), { Authorization: `Bearer ${SECRET_VALUE}`, 'X-Example-Key': SECRET_VALUE });
+  for (const mode of [0o644, 0o640, 0o604, 0o620]) {
+    assert.throws(() => loadWebhookHeaders(headersFile(`X-Key: ${SECRET_VALUE}\n`, mode)), /group or others/, mode.toString(8));
+  }
+  const link = path.join(path.dirname(good), 'link');
+  fs.symlinkSync(good, link);
+  assert.throws(() => loadWebhookHeaders(link), /regular file/);
+  assert.throws(() => loadWebhookHeaders(path.join(path.dirname(good), 'missing')), /not found/);
+  const bad = {
+    [`X-Key: ${SECRET_VALUE}\r\n`]: /carriage return/,
+    [`X-Key ${SECRET_VALUE}\n`]: /expected/,
+    [`: ${SECRET_VALUE}\n`]: /expected/,
+    [`X Key: ${SECRET_VALUE}\n`]: /invalid header name/,
+    [`X-Key\u00e9: ${SECRET_VALUE}\n`]: /invalid header name/,
+    [`X-Key: a\u0000${SECRET_VALUE}\n`]: /control characters/,
+    'X-Key:   \n': /empty value/,
+    [`X-Key: ${SECRET_VALUE}\nx-key: other\n`]: /duplicate/,
+    [`Content-Type: ${SECRET_VALUE}\n`]: /managed by the service/,
+    [`Host: ${SECRET_VALUE}\n`]: /managed by the service/,
+  };
+  for (const [text, pattern] of Object.entries(bad)) {
+    let message = '';
+    try { parseWebhookHeaders(text); } catch (error) { message = error.message; }
+    assert.match(message, pattern, JSON.stringify(text));
+    assert.equal(message.includes(SECRET_VALUE), false, 'error must not echo the value');
+  }
+});
+
+test('webhook POSTs carry the configured headers; failures never log their values', async () => {
+  const SECRET_VALUE = 'placeholder-secret-value-456';
+  const seen = [];
+  const hook = http.createServer((req, res) => { seen.push(req.headers); req.resume(); req.on('end', () => res.end('ok')); });
+  const hookPort = await listen(hook);
+  const logs = [];
+  try {
+    await withService(async ({ port, auth }) => {
+      const { csrf_token: csrf } = (await request(port, { path: '/api/cockpit/v1/capabilities', headers: auth })).json;
+      const headers = { ...auth, Origin: ORIGIN, 'X-Cockpit-CSRF': csrf, 'Content-Type': 'application/json' };
+      await request(port, { method: 'POST', path: '/api/cockpit/v1/intents', headers, body: capture() });
+      for (let i = 0; i < 50 && !seen.length; i += 1) await new Promise((r) => setTimeout(r, 20));
+      assert.equal(seen[0].authorization, `Bearer ${SECRET_VALUE}`);
+      assert.equal(seen[0]['x-example-key'], 'k');
+      assert.equal(seen[0]['content-type'], 'application/json');
+    }, { webhookUrl: `http://127.0.0.1:${hookPort}/hook`, webhookHeaders: { Authorization: `Bearer ${SECRET_VALUE}`, 'X-Example-Key': 'k' } });
+  } finally {
+    await close(hook);
+  }
+  await withService(async ({ port, auth }) => {
+    const { csrf_token: csrf } = (await request(port, { path: '/api/cockpit/v1/capabilities', headers: auth })).json;
+    const headers = { ...auth, Origin: ORIGIN, 'X-Cockpit-CSRF': csrf, 'Content-Type': 'application/json' };
+    assert.equal((await request(port, { method: 'POST', path: '/api/cockpit/v1/intents', headers, body: capture() })).status, 201);
+    for (let i = 0; i < 100 && !logs.length; i += 1) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(logs.length > 0);
+    assert.equal(logs.join('\n').includes(SECRET_VALUE), false);
+  }, { webhookUrl: `http://127.0.0.1:${hookPort}/gone`, webhookHeaders: { Authorization: `Bearer ${SECRET_VALUE}` }, log: (m) => logs.push(m) });
+});
+
+test('--webhook-headers-file flag and env wire into both servers and fail closed', async () => {
+  const SECRET_VALUE = 'placeholder-secret-value-789';
+  const root = makeRoot();
+  const e = env();
+  e.COCKPIT_HOME = root;
+  const file = headersFile(`X-Example-Key: ${SECRET_VALUE}\n`);
+  const fromFlag = parseServeConfig({ argv: ['--write', '--webhook-url', 'http://127.0.0.1:9/hook', '--webhook-headers-file', file], env: e });
+  assert.equal(fromFlag.webhookHeadersFile, file);
+  const fromEq = parseServeConfig({ argv: ['--write', `--webhook-headers-file=${file}`], env: e });
+  assert.equal(fromEq.webhookHeadersFile, file);
+  const fromEnv = parseServeConfig({ argv: ['--write'], env: { ...e, COCKPIT_INTENTS_WEBHOOK_HEADERS_FILE: file } });
+  assert.equal(fromEnv.webhookHeadersFile, file);
+  // serve --write: missing URL and bad permissions refuse to start.
+  assert.throws(() => createServeServer({ ...fromEq, port: 0 }, { token: 't', env: e }), /requires --webhook-url/);
+  const loose = headersFile(`X-Example-Key: ${SECRET_VALUE}\n`, 0o644);
+  assert.throws(() => createServeServer({ ...fromFlag, webhookHeadersFile: loose, port: 0 }, { token: 't', env: e }), /group or others/);
+  const server = createServeServer({ ...fromFlag, port: 0 }, { token: 't', env: e });
+  assert.ok(server);
+  // Standalone CLI: refuses a group/world-readable file without echoing the value.
+  const svc = path.join(repoRoot, 'skill', 'scripts', 'intents-service.mjs');
+  const run = (extraEnv, ...args) => spawnSync(process.execPath, [svc, '--root', root, '--origin', ORIGIN, '--port', '0', ...args], { encoding: 'utf8', env: { ...e, ...extraEnv }, timeout: 5000 });
+  const refused = run({}, '--webhook-url', 'http://127.0.0.1:9/hook', '--webhook-headers-file', loose);
+  assert.equal(refused.status, 1);
+  assert.match(refused.stderr, /group or others/);
+  assert.equal(`${refused.stdout}${refused.stderr}`.includes(SECRET_VALUE), false);
+  const viaEnv = run({ COCKPIT_INTENTS_WEBHOOK_HEADERS_FILE: loose }, '--webhook-url', 'http://127.0.0.1:9/hook');
+  assert.equal(viaEnv.status, 1);
+  assert.match(viaEnv.stderr, /group or others/);
+  const noUrl = run({ COCKPIT_INTENTS_WEBHOOK_URL: '' }, '--webhook-headers-file', file);
+  assert.equal(noUrl.status, 1);
+  assert.match(noUrl.stderr, /requires --webhook-url/);
+});
