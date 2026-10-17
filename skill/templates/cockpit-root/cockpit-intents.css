@@ -1,0 +1,121 @@
+/*
+ * cockpit-intents.css — styles for the optional operator request widget.
+ * Loaded by cockpit-intents.js only after the write service is detected.
+ * Uses the shared cockpit.css tokens with neutral fallbacks; the widget is
+ * position: fixed so it never joins the page's grid layout.
+ */
+.cockpit-intents {
+  --ci-bg: var(--surface, #fff);
+  --ci-bg-2: var(--surface-2, #f5f6f8);
+  --ci-ink: var(--ink, #0f1216);
+  --ci-soft: var(--ink-soft, #4a5159);
+  --ci-rule: var(--rule-strong, #b4b8bd);
+  --ci-accent: var(--accent, #047857);
+  --ci-accent-ink: var(--accent-ink, #fff);
+  --ci-radius: var(--radius, 4px);
+  font-family: var(--sans, system-ui, sans-serif);
+  color: var(--ci-ink);
+  font-size: 15px;
+  line-height: 1.45;
+}
+.cockpit-intents *, .cockpit-intents *::before, .cockpit-intents *::after { box-sizing: border-box; }
+.cockpit-intents .ci-sr {
+  position: absolute; width: 1px; height: 1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap;
+}
+.cockpit-intents .ci-bar {
+  position: fixed; right: 12px; bottom: 12px; z-index: 900;
+  display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end;
+  max-width: calc(100vw - 24px);
+}
+.cockpit-intents button { font: inherit; cursor: pointer; }
+.cockpit-intents .ci-launch, .cockpit-intents .ci-secondary {
+  min-height: 44px; padding: 0 14px;
+  background: var(--ci-bg); color: var(--ci-ink);
+  border: 1px solid var(--ci-rule); border-radius: var(--pill, var(--ci-radius));
+  box-shadow: var(--shadow-sm, 0 2px 10px rgba(0, 0, 0, 0.18));
+}
+.cockpit-intents .ci-secondary { box-shadow: none; min-height: 40px; }
+.cockpit-intents .ci-launch:hover, .cockpit-intents .ci-secondary:hover { background: var(--ci-bg-2); }
+.cockpit-intents .ci-primary {
+  min-height: 44px; padding: 0 18px;
+  background: var(--ci-accent); color: var(--ci-accent-ink);
+  border: 1px solid var(--ci-accent); border-radius: var(--pill, var(--ci-radius));
+  font-weight: 600;
+}
+.cockpit-intents .ci-primary:disabled, .cockpit-intents .ci-secondary:disabled { opacity: 0.6; cursor: progress; }
+.cockpit-intents button:focus-visible, .cockpit-intents textarea:focus-visible,
+.cockpit-intents input:focus-visible, .cockpit-intents select:focus-visible, .cockpit-intents a:focus-visible {
+  outline: 2px solid var(--ci-ink); outline-offset: 2px;
+}
+.cockpit-intents .ci-panel {
+  position: fixed; right: 8px; bottom: 72px; z-index: 901;
+  width: min(28rem, calc(100vw - 16px));
+  max-height: calc(100vh - 88px); max-height: calc(100dvh - 88px);
+  overflow-y: auto; overscroll-behavior: contain;
+  background: var(--ci-bg); color: var(--ci-ink);
+  border: 1px solid var(--ci-rule); border-radius: var(--radius-lg, var(--ci-radius));
+  box-shadow: var(--shadow-lg, 0 10px 40px rgba(0, 0, 0, 0.35));
+}
+.cockpit-intents .ci-panel[hidden] { display: none; }
+.cockpit-intents .ci-head {
+  position: sticky; top: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 12px 10px 16px; background: var(--ci-bg); border-bottom: 1px solid var(--ci-rule);
+}
+.cockpit-intents .ci-title { margin: 0; font-size: 16px; font-weight: 600; }
+.cockpit-intents .ci-close {
+  min-width: 44px; min-height: 44px; background: transparent; color: var(--ci-ink);
+  border: 0; border-radius: var(--ci-radius); font-size: 22px; line-height: 1;
+}
+.cockpit-intents .ci-body { padding: 12px 16px 16px; }
+.cockpit-intents .ci-field { display: flex; flex-direction: column; gap: 4px; margin: 0 0 12px; }
+.cockpit-intents label { font-weight: 600; font-size: 14px; }
+.cockpit-intents textarea, .cockpit-intents input, .cockpit-intents select {
+  width: 100%; max-width: 100%; font: inherit; color: var(--ci-ink);
+  background: var(--ci-bg-2); border: 1px solid var(--ci-rule); border-radius: var(--ci-radius);
+  padding: 8px 10px; min-height: 44px;
+}
+.cockpit-intents textarea { resize: vertical; }
+.cockpit-intents .ci-hint, .cockpit-intents .ci-small { margin: 0; color: var(--ci-soft); font-size: 13px; }
+.cockpit-intents .ci-target { margin: 0 0 10px; font-size: 13px; color: var(--ci-soft); overflow-wrap: anywhere; }
+.cockpit-intents code { font-family: var(--mono, ui-monospace, monospace); font-size: 0.9em; overflow-wrap: anywhere; }
+.cockpit-intents .ci-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
+.cockpit-intents .ci-status { margin: 8px 0 0; font-size: 14px; }
+.cockpit-intents .ci-status:empty { display: none; }
+.cockpit-intents .ci-link {
+  background: none; border: 0; padding: 8px 2px; min-height: 40px;
+  color: var(--ci-ink); text-decoration: underline; text-underline-offset: 3px;
+}
+.cockpit-intents .ci-receipt {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 8px 10px; margin: 0 0 12px; background: var(--ci-bg-2);
+  border: 1px solid var(--ci-rule); border-radius: var(--ci-radius); font-size: 14px;
+}
+.cockpit-intents .ci-state {
+  display: inline-block; padding: 1px 8px; border: 1px solid var(--ci-rule);
+  border-radius: var(--pill, var(--ci-radius)); font-size: 12px; font-weight: 600;
+}
+.cockpit-intents .ci-state-needs-input { border-style: dashed; border-width: 2px; }
+.cockpit-intents .ci-state-addressed::before { content: "✓ "; }
+.cockpit-intents .ci-state-needs-input::before { content: "? "; }
+.cockpit-intents .ci-tabs { display: flex; gap: 4px; margin: 0 0 12px; border-bottom: 1px solid var(--ci-rule); }
+.cockpit-intents .ci-tab {
+  min-height: 44px; padding: 0 14px; background: transparent; color: var(--ci-soft);
+  border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.cockpit-intents .ci-tab[aria-selected="true"] { color: var(--ci-ink); border-bottom-color: var(--ci-ink); font-weight: 600; }
+.cockpit-intents .ci-item { padding: 10px 0; border-top: 1px solid var(--ci-rule); overflow-wrap: anywhere; }
+.cockpit-intents .ci-item:first-child { border-top: 0; }
+.cockpit-intents .ci-item p { margin: 4px 0; }
+.cockpit-intents .ci-meta { font-size: 13px; color: var(--ci-soft); }
+.cockpit-intents .ci-message { white-space: pre-wrap; }
+.cockpit-intents .ci-msg { white-space: pre-wrap; font-size: 14px; padding-left: 10px; border-left: 2px solid var(--ci-rule); }
+.cockpit-intents .ci-result { margin-top: 6px; padding: 8px 10px; background: var(--ci-bg-2); border-radius: var(--ci-radius); }
+.cockpit-intents .ci-reply, .cockpit-intents .ci-reply-stranded { width: 100%; }
+.cockpit-intents a { color: var(--ci-ink); }
+@media (max-width: 480px) {
+  .cockpit-intents .ci-panel { right: 4px; left: 4px; width: auto; bottom: 64px; }
+  .cockpit-intents .ci-bar { right: 6px; bottom: 6px; }
+  .cockpit-intents .ci-launch { padding: 0 12px; }
+}
+@media print { .cockpit-intents { display: none; } }

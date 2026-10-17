@@ -12,6 +12,7 @@ It is an AI-agent local memory kit, not the Red Hat Cockpit Linux server adminis
 - Lints pages against the Cockpit Kit page contract.
 - Generates a deterministic static search index.
 - Serves the local repo over a loopback-only HTTP server with token auth by default.
+- Optionally accepts operator page comments and captures through an opt-in write service.
 
 ## Requirements
 
@@ -77,6 +78,54 @@ node ~/.local/share/cockpit-kit/skill/scripts/serve.mjs --root /path/to/knowledg
 
 `serve.mjs` binds to loopback by default and prints a tokenized URL. Use `--no-auth` only on a trusted machine.
 
+## Operator comments and capture (MVP, opt-in)
+
+An optional write service lets the operator leave page comments and quick captures from the browser and follow them to an agent's outcome. It is off by default; plain `serve.mjs` stays read-only and static sites are unaffected.
+
+- **Widget:** starter pages include `cockpit-intents.js` (plus `cockpit-intents.css`). It probes `GET /api/cockpit/v1/capabilities` and stays hidden when the service is absent. It offers Comment (on this page), Capture, and a Requests panel with Active and Done views (status, outcome, page link, commit id).
+- **State:** one private JSON file per knowledge repo at `${XDG_STATE_HOME:-~/.local/state}/cockpit-kit/<repo-hash>/intents.json` (mode `0600`, atomic temp+rename), never inside the served tree, `.cockpit/`, or the search index.
+- **Trust:** only `operator_message` and operator follow-ups are instructions; quotes, captured text, and URLs go in `payload` as untrusted data. Mutations require an exact `Origin`, a CSRF token from `capabilities`, `application/json`, and a body of 32 KiB or less. Client output paths and service-controlled fields are rejected; comment targets must be existing pages inside the root.
+
+Local write mode, behind the existing cookie auth (`--write --no-auth` is refused):
+
+```bash
+node ~/.local/share/cockpit-kit/skill/scripts/serve.mjs --root /path/to/knowledge-repo --write
+```
+
+Behind an authenticating reverse proxy, run the standalone loopback service and route `/api/cockpit/v1/*` to it. The proxy must inject `X-Cockpit-Proxy-Secret` (contents of the printed secret file) and optionally `X-Cockpit-Principal`, and must strip both from client requests:
+
+```bash
+node ~/.local/share/cockpit-kit/skill/scripts/intents-service.mjs \
+  --root /path/to/knowledge-repo --port 18767 \
+  --origin https://cockpit.example.com \
+  --origin https://cockpit.tailnet.example.ts.net
+```
+
+Allowed origins: repeat `--origin` once per browser origin (both servers accept `--origin <o>` and `--origin=<o>`). Each value must be exactly `scheme://host[:port]` with an `http` or `https` scheme. Values are normalized at startup (lowercase host, default port dropped, one trailing `/` tolerated). Wildcards (`*`), comma-separated lists, paths, queries, fragments, and credentials are rejected, so a typo fails at startup instead of silently allowing nothing. Request `Origin` headers must then match one configured origin exactly: no subdomain, scheme, port, or trailing-slash variants. The CSRF token from `capabilities` is tied to the operator, not the origin, so it works from any allowed origin. `serve.mjs --write` uses the same flag. Without `--origin` it allows only its own loopback origins.
+
+Agents process the queue with the consumer CLI (see `skill/SKILL.md`, "Operator Request Queue"):
+
+```bash
+node ~/.local/share/cockpit-kit/skill/scripts/intents.mjs summary
+node ~/.local/share/cockpit-kit/skill/scripts/intents.mjs claim --json
+node ~/.local/share/cockpit-kit/skill/scripts/intents.mjs resolve <id> --claim <token> \
+  --outcome changed --summary "..." --page /route/ --commit <sha>
+```
+
+Optional wake hook: `--webhook-url <url>` or `COCKPIT_INTENTS_WEBHOOK_URL` makes either server POST `{"event","intent_id","kind","at"}` (no request content) when a new intent or operator reply arrives. Failures are logged and ignored.
+
+If the receiver needs an auth key, add `--webhook-headers-file <path>` (or `COCKPIT_INTENTS_WEBHOOK_HEADERS_FILE=<path>`). It works with both `intents-service.mjs` and `serve.mjs --write`, and requires a webhook URL. The file holds one `Header-Name: value` per line; blank lines and `#` comments are ignored:
+
+```text
+# chmod 600 this file
+Authorization: Bearer <your-receiver-token>
+X-Example-Key: <another-value>
+```
+
+The file is read once at startup. The server refuses to start if the file is a symlink, is not owned by the service user, or has any group or world permission bits (use `chmod 600`). It also refuses invalid header names, CR/LF or other control characters in values, empty values, duplicates, and headers the service manages itself (`Host`, `Content-Type`, `Content-Length`, ...). The headers go on every webhook POST. Their values are never logged or included in error messages, and startup output shows only how many headers were loaded.
+
+This is a lean first version of the [design](docs/design/operator-comments-and-capture.md); see its "MVP implementation status" section for what is deferred.
+
 ## Themes: Light, Dark, System
 
 The starter knowledge repo ships a light and a dark palette and a theme switcher in the navigation of every starter page.
@@ -117,7 +166,7 @@ The GitHub Actions workflow runs `node --test` on Ubuntu and macOS with Node 20 
 ## Documentation
 
 - Page contract: [`skill/reference/page-contract.md`](skill/reference/page-contract.md)
-- Proposed design, not implemented: [Operator comments and capture lifecycle](docs/design/operator-comments-and-capture.md) ([#10](https://github.com/autojeremy/cockpit-kit/issues/10)).
+- Design (lean MVP implemented, hardening deferred): [Operator comments and capture lifecycle](docs/design/operator-comments-and-capture.md) ([#10](https://github.com/autojeremy/cockpit-kit/issues/10)).
 
 ## Security
 
