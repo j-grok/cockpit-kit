@@ -196,3 +196,67 @@ test('reply: a lost response survives an auth-refused retry; edits then go out u
     assert.deepEqual(store.read().intents[0].messages.filter((m) => m.author === 'operator').map((m) => m.text), ['The first one.', 'Actually, the second one.']);
   });
 });
+
+// Load more is in flight across the 5-second poll.
+test('paging: polling pauses during Load more and a refresh keeps the requested page', async () => {
+  await withService(async ({ port, auth, store, root }) => {
+    store.mutate((state) => {
+      for (let i = 0; i < 55; i += 1) createIntent(state, root, { schema_version: 1, request_id: rid(), mode: 'capture', operator_message: `Item ${i}`, target: null });
+    });
+    const page = (cursor) => request(port, { path: `${API}/intents?view=open&limit=50${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, headers: auth });
+    // Mirrors the widget's loadList: fetch ticket.want pages, apply if current.
+    async function refresh(pager) {
+      const ticket = w.pagerBeginRefresh(pager, 'open');
+      let items = [];
+      let cursor = null;
+      let got = 0;
+      do {
+        const result = await page(cursor);
+        items = items.concat(result.data.items);
+        cursor = result.data.next_cursor;
+        got += 1;
+      } while (cursor && got < ticket.want);
+      return w.pagerFinishRefresh(pager, ticket, got) ? { items, cursor } : null;
+    }
+
+    const pager = w.createPager();
+    let shown = await refresh(pager);
+    assert.equal(shown.items.length, 50);
+    assert.ok(shown.cursor);
+
+    // Load more starts; its response is delayed past the next poll.
+    const ticket = w.pagerBeginMore(pager, 'open');
+    assert.ok(ticket);
+    assert.equal(w.pagerBeginMore(pager, 'open'), null, 'one Load more at a time');
+    const delayed = page(shown.cursor);
+    assert.equal(w.pagerCanPoll(pager), false, 'the poll skips while a page is loading');
+    const more = await delayed;
+    assert.equal(w.pagerFinishMore(pager, ticket, more.ok), true, 'loaded page is kept');
+    shown = { items: shown.items.concat(more.data.items), cursor: more.data.next_cursor };
+    assert.equal(shown.items.length, 55);
+    assert.equal(shown.cursor, null);
+    assert.equal(w.pagerCanPoll(pager), true);
+
+    // The next poll re-fetches the whole loaded range.
+    shown = await refresh(pager);
+    assert.equal(shown.items.length, 55);
+
+    // A refresh the operator triggers mid-Load-more supersedes it but fetches
+    // the page that was asked for, so nothing is lost either way.
+    w.pagerReset(pager);
+    shown = await refresh(pager);
+    const ticket2 = w.pagerBeginMore(pager, 'open');
+    const late = page(shown.cursor);
+    const forced = await refresh(pager);
+    assert.equal(forced.items.length, 55);
+    assert.equal(w.pagerFinishMore(pager, ticket2, (await late).ok), false, 'superseded page is dropped, already included');
+    assert.equal(pager.pages, 2);
+    assert.equal((await refresh(pager)).items.length, 55);
+
+    // Switching tabs resets to one page and drops the in-flight page.
+    const ticket3 = w.pagerBeginMore(pager, 'open');
+    w.pagerReset(pager);
+    assert.equal(w.pagerFinishMore(pager, ticket3, true), false);
+    assert.equal(pager.pages, 1);
+  });
+});

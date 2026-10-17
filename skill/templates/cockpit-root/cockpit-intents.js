@@ -67,8 +67,48 @@
     return { outcome: outcome, refused: refused, edited: edited };
   }
 
+  // Request-list paging. A refresh supersedes an in-flight "Load more" but
+  // re-fetches the page it asked for, and polling is paused while one runs,
+  // so a loaded page is never dropped.
+  function createPager() {
+    return { seq: 0, pages: 1, more: null };
+  }
+  function pagerReset(p) {
+    p.seq += 1;
+    p.pages = 1;
+    p.more = null;
+  }
+  function pagerBeginRefresh(p, view) {
+    var want = p.pages + (p.more && p.more.view === view ? 1 : 0);
+    p.more = null;
+    p.seq += 1;
+    return { seq: p.seq, view: view, want: want };
+  }
+  function pagerFinishRefresh(p, ticket, pagesGot) {
+    if (ticket.seq !== p.seq) return false;
+    p.pages = Math.max(1, pagesGot);
+    return true;
+  }
+  function pagerBeginMore(p, view) {
+    if (p.more) return null;
+    p.seq += 1;
+    p.more = { seq: p.seq, view: view };
+    return p.more;
+  }
+  function pagerFinishMore(p, ticket, ok) {
+    if (p.more === ticket) p.more = null;
+    if (ticket.seq !== p.seq) return false;
+    if (ok) p.pages += 1;
+    return true;
+  }
+  function pagerCanPoll(p) {
+    return !p.more;
+  }
+
   var helpers = {
     writeOutcome: writeOutcome, nextSubmission: nextSubmission, settleSubmission: settleSubmission,
+    createPager: createPager, pagerReset: pagerReset, pagerBeginRefresh: pagerBeginRefresh, pagerFinishRefresh: pagerFinishRefresh,
+    pagerBeginMore: pagerBeginMore, pagerFinishMore: pagerFinishMore, pagerCanPoll: pagerCanPoll,
   };
   if (typeof window === 'undefined') {
     if (typeof module === 'object' && module && module.exports) module.exports = helpers;
@@ -187,8 +227,7 @@
   var draft = null; // drafts[mode] while a composer is shown
   var replyDrafts = {}; // per intent id: { text, requestId, version, note }
   var receipt = null; // last intent receipt shown in composer
-  var listSeq = 0; // bumps on every list load; stale responses are ignored
-  var pagesLoaded = 1; // pages shown in the current view (Load more adds one)
+  var pager = createPager(); // list load sequencing and pages shown (Load more adds one)
   var view = 'open';
   var pollTimer = null, pollDelay = 5000;
 
@@ -239,7 +278,7 @@
   function open(next, opener) {
     lastOpener = opener || lastOpener;
     if (mode !== next || next === 'requests') receipt = null;
-    if (next === 'requests') pagesLoaded = 1;
+    if (next === 'requests') pagerReset(pager);
     if (next === 'comment' || next === 'capture') {
       // Each mode keeps its own in-memory draft; switching never discards one.
       if (!drafts[next]) drafts[next] = newDraft(next);
@@ -407,9 +446,9 @@
     [['open', 'Active'], ['history', 'Done']].forEach(function (pair) {
       var selected = view === pair[0];
       var tab = el('button', { type: 'button', role: 'tab', class: 'ci-tab', 'aria-selected': selected ? 'true' : 'false', tabindex: selected ? '0' : '-1', text: pair[1] });
-      tab.addEventListener('click', function () { view = pair[0]; pagesLoaded = 1; render(); body.querySelector('.ci-tab[aria-selected="true"]').focus(); schedule(0); });
+      tab.addEventListener('click', function () { view = pair[0]; pagerReset(pager); render(); body.querySelector('.ci-tab[aria-selected="true"]').focus(); schedule(0); });
       tab.addEventListener('keydown', function (e) {
-        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); view = view === 'open' ? 'history' : 'open'; pagesLoaded = 1; render(); body.querySelector('.ci-tab[aria-selected="true"]').focus(); schedule(0); }
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); view = view === 'open' ? 'history' : 'open'; pagerReset(pager); render(); body.querySelector('.ci-tab[aria-selected="true"]').focus(); schedule(0); }
       });
       tabs.appendChild(tab);
     });
@@ -438,8 +477,8 @@
     var list = body.querySelector('.ci-list');
     if (!list) return Promise.resolve(true);
     var forView = view;
-    var seq = ++listSeq;
-    var want = pagesLoaded;
+    // Supersedes any load in flight; includes a pending Load more page.
+    var ticket = pagerBeginRefresh(pager, forView);
     var items = [];
     var cursor = null;
     var got = 0;
@@ -449,14 +488,14 @@
         items = items.concat(result.data.items);
         cursor = result.data.next_cursor;
         got += 1;
-        if (cursor && got < want && seq === listSeq) return step();
+        if (cursor && got < ticket.want && ticket.seq === pager.seq) return step();
         return result;
       });
     }
     return step().then(function (result) {
-      // Ignore responses superseded by a newer load (including Load more), a
-      // view/mode change, or that arrive while the operator is typing a reply.
-      if (seq !== listSeq || mode !== 'requests' || view !== forView || !list.isConnected) return true;
+      // Ignore responses superseded by a newer load, a view/mode change, or
+      // that arrive while the operator is typing a reply.
+      if (ticket.seq !== pager.seq || mode !== 'requests' || view !== forView || !list.isConnected) return true;
       if (!force && isEditingReply()) return true;
       list.setAttribute('aria-busy', 'false');
       if (!result.ok) {
@@ -465,6 +504,7 @@
         list.insertBefore(el('p', { class: 'ci-status', text: errorText(result) }), list.firstChild);
         return false;
       }
+      pagerFinishRefresh(pager, ticket, got);
       list.textContent = '';
       if (!items.length) {
         list.appendChild(el('p', { class: 'ci-hint', text: forView === 'open' ? 'No active requests.' : 'No completed requests yet.' }));
@@ -477,25 +517,31 @@
       if (cursor) list.appendChild(moreButton(cursor));
       return true;
     }, function () {
-      if (seq !== listSeq) return false;
+      if (ticket.seq !== pager.seq) return false;
       list.setAttribute('aria-busy', 'false');
       if (!list.querySelector('.ci-status')) list.insertBefore(el('p', { class: 'ci-status', text: 'Service temporarily unavailable.' }), list.firstChild);
       return false;
     });
   }
 
+  // Polling is paused while a page is loading; a refresh the operator
+  // triggers meanwhile re-fetches that page too (see pagerBeginRefresh).
   function loadMore(cursor) {
     var list = body.querySelector('.ci-list');
     if (!list) return;
     var forView = view;
-    var seq = ++listSeq; // supersedes any refresh already in flight
+    var ticket = pagerBeginMore(pager, forView);
+    if (!ticket) return;
+    stopPolling();
     var button = list.querySelector('.ci-more');
     if (button) button.disabled = true;
+    function resume() {
+      if (mode === 'requests') schedule(pollDelay);
+    }
     fetchPage(forView, cursor).then(function (result) {
-      if (seq !== listSeq || mode !== 'requests' || view !== forView || !list.isConnected) return;
+      if (!pagerFinishMore(pager, ticket, result.ok) || mode !== 'requests' || view !== forView || !list.isConnected) return;
       if (button) button.remove();
-      if (!result.ok) { list.appendChild(el('p', { class: 'ci-status', text: errorText(result) })); list.appendChild(moreButton(cursor)); return; }
-      pagesLoaded += 1;
+      if (!result.ok) { list.appendChild(el('p', { class: 'ci-status', text: errorText(result) })); list.appendChild(moreButton(cursor)); resume(); return; }
       var first = null;
       result.data.items.forEach(function (intent) {
         var node = renderIntent(intent);
@@ -504,10 +550,12 @@
       });
       if (result.data.next_cursor) list.appendChild(moreButton(result.data.next_cursor));
       if (first) first.focus();
+      resume();
     }, function () {
-      if (seq !== listSeq) return;
+      if (!pagerFinishMore(pager, ticket, false)) return;
       if (button) button.disabled = false;
       announce('Could not load more; try again.');
+      resume();
     });
   }
 
@@ -682,7 +730,7 @@
     var work;
     if (mode === 'requests') {
       // While a reply is being typed, skip this refresh but keep polling alive.
-      if (isEditingReply()) { schedule(pollDelay); return; }
+      if (isEditingReply() || !pagerCanPoll(pager)) { schedule(pollDelay); return; }
       if (!body.querySelector('.ci-list')) render();
       work = loadList();
     } else if (receipt) {
