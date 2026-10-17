@@ -146,6 +146,13 @@ export function resolveTargetPage(root, page, field = 'target.page') {
     throw new IntentError(404, 'target_not_found', 'Target page does not exist.', field);
   }
   if (!isPathInside(real, realRoot)) throw new IntentError(404, 'target_not_found', 'Target page does not exist.', field);
+  // Apply the same hidden/excluded-segment rules to the symlink-resolved
+  // location, so an in-root alias (e.g. `alias -> .cockpit` or
+  // `-> attachments`) cannot make a private or excluded file a target.
+  const realSegments = path.relative(realRoot, real).split(path.sep);
+  if (realSegments.some((segment) => segment.startsWith('.') || EXCLUDED_SEGMENTS.has(segment))) {
+    throw new IntentError(404, 'target_not_found', 'Target page does not exist.', field);
+  }
   const stat = fs.statSync(real, { throwIfNoEntry: false });
   if (!stat || !stat.isFile()) throw new IntentError(404, 'target_not_found', 'Target page does not exist.', field);
   return { page, file: real };

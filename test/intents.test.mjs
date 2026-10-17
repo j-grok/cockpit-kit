@@ -797,3 +797,29 @@ test('--webhook-headers-file flag and env wire into both servers and fail closed
   assert.equal(noUrl.status, 1);
   assert.match(noUrl.stderr, /requires --webhook-url/);
 });
+
+test('target resolution applies hidden/excluded rules to symlink-resolved paths', () => {
+  const root = makeRoot({ git: true });
+  fs.writeFileSync(path.join(root, '.cockpit', 'private.html'), 'p');
+  fs.writeFileSync(path.join(root, '.git', 'x.html'), 'g');
+  fs.mkdirSync(path.join(root, 'attachments'));
+  fs.writeFileSync(path.join(root, 'attachments', 'a.html'), 'a');
+  fs.mkdirSync(path.join(root, 'node_modules', 'pkg'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'node_modules', 'pkg', 'index.html'), 'n');
+  fs.symlinkSync('.cockpit', path.join(root, 'cockpit-alias'));
+  fs.symlinkSync('.git', path.join(root, 'git-alias'));
+  fs.symlinkSync('attachments', path.join(root, 'files'));
+  fs.symlinkSync(path.join('node_modules', 'pkg'), path.join(root, 'pkg'));
+  fs.symlinkSync(path.join('.cockpit', 'private.html'), path.join(root, 'private-link.html'));
+  fs.symlinkSync('notes', path.join(root, 'notes-alias'));
+  for (const page of ['/cockpit-alias/private.html', '/git-alias/x.html', '/files/a.html', '/pkg/', '/private-link.html']) {
+    assert.equal(code(() => resolveTargetPage(root, page)), 'target_not_found', page);
+  }
+  assert.equal(resolveTargetPage(root, '/notes-alias/').page, '/notes-alias/');
+  // Result references use the same validator.
+  const state = { schema_version: 1, root, intents: [], requests: {} };
+  assert.equal(code(() => createIntent(state, root, comment('/cockpit-alias/private.html'))), 'target_not_found');
+  const { intent } = createIntent(state, root, capture());
+  const { token } = claimIntent(state, intent.intent_id);
+  assert.equal(code(() => resolveIntent(state, root, intent.intent_id, token, { outcome: 'answered', summary: 'x', page: '/files/a.html' })), 'target_not_found');
+});
