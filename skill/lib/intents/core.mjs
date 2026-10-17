@@ -255,6 +255,10 @@ export function replyIntent(state, id, body, { principal = 'operator' } = {}) {
   const message = boundedString(body.operator_message, 'operator_message', LIMITS.operator_message_bytes, { required: true, nonBlank: true });
   checkVersion(intent, body.version);
   if (intent.state !== 'open' && intent.state !== 'needs-input') throw new IntentError(409, 'invalid_transition', `Cannot reply to an ${intent.state} intent; create a new request.`);
+  // A claimed intent is being worked from the instructions the agent already
+  // read; accepting a new instruction now would let the agent resolve without
+  // seeing it. Refuse until the agent asks, releases, or finishes.
+  if (intent.processing.claim) throw new IntentError(409, 'claim_conflict', 'An agent is working on this request; reply after it asks a question or finishes, or create a new request.');
   const replies = intent.messages.filter((item) => item.author === 'operator').length;
   if (replies >= LIMITS.replies_per_intent) throw new IntentError(409, 'capacity_reached', 'Follow-up limit reached; create a new linked request.');
   intent.messages.push({ author: 'operator', kind: 'reply', text: message, request_id: body.request_id, principal_id: principal, at: now() });
@@ -377,7 +381,10 @@ export function claimIntent(state, id, { consumer = 'agent' } = {}) {
   if (id) {
     intent = findIntent(state, id);
   } else {
-    intent = listIntents(state, { view: 'open', limit: LIMITS.list_max }).items.find((item) => item.state === 'open' && !item.processing.claim);
+    // Filter for eligibility over the whole queue first, then take the oldest.
+    intent = state.intents
+      .filter((item) => item.state === 'open' && !item.processing.claim)
+      .sort((a, b) => sortKey(a).localeCompare(sortKey(b)))[0];
     if (!intent) throw new IntentError(404, 'no_eligible_intent', 'No open, unclaimed intents.');
   }
   if (intent.state !== 'open') throw new IntentError(409, 'invalid_transition', `Cannot claim an intent in state ${intent.state}.`);

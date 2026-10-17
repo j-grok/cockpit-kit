@@ -7,7 +7,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import {
-  askIntent, claimIntent, consumerArchive, createIntent, listIntents, operatorArchive, publicIntent, replyIntent, resolveIntent, resolveTargetPage,
+  askIntent, claimIntent, consumerArchive, createIntent, listIntents, operatorArchive, publicIntent, releaseIntent, replyIntent, resolveIntent, resolveTargetPage,
 } from '../skill/lib/intents/core.mjs';
 import { IntentStore, StoreError, stateDirFor } from '../skill/lib/intents/store.mjs';
 import { createIntentsService } from '../skill/scripts/intents-service.mjs';
@@ -611,4 +611,86 @@ test('serve --write accepts multiple repeated --origin flags', async () => {
   } finally {
     await close(server);
   }
+});
+
+// ---------- review follow-ups ----------
+
+test('serve refuses symlink aliases to .git and private .cockpit files', async () => {
+  const root = makeRoot({ git: true });
+  fs.writeFileSync(path.join(root, '.cockpit', 'private.toml'), 'secret = "no"\n');
+  fs.writeFileSync(path.join(root, '.cockpit', 'search-index.json'), '{"kind":"cockpit-search-index","pages":[]}\n');
+  fs.symlinkSync('.git', path.join(root, 'git-alias'));
+  fs.symlinkSync(path.join('.git', 'HEAD'), path.join(root, 'head.txt'));
+  fs.symlinkSync('.cockpit', path.join(root, 'cockpit-alias'));
+  const e = env();
+  const server = createServeServer({ root, host: '127.0.0.1', port: 0, auth: false }, { env: e });
+  const port = await listen(server);
+  try {
+    assert.equal((await request(port, { path: '/git-alias/config' })).status, 404);
+    assert.equal((await request(port, { path: '/git-alias/HEAD' })).status, 404);
+    assert.equal((await request(port, { path: '/head.txt' })).status, 404);
+    assert.equal((await request(port, { path: '/cockpit-alias/private.toml' })).status, 404);
+    assert.equal((await request(port, { path: '/cockpit-alias/search-index.json' })).status, 200);
+    assert.equal((await request(port, { path: '/notes/' })).status, 200);
+  } finally {
+    await close(server);
+  }
+});
+
+test('operator replies are refused while an agent holds the claim', async () => {
+  const root = makeRoot();
+  const state = { schema_version: 1, root, intents: [], requests: {} };
+  const { intent } = createIntent(state, root, capture());
+  const { token } = claimIntent(state, intent.intent_id);
+  const before = intent.version;
+  assert.equal(code(() => replyIntent(state, intent.intent_id, { request_id: rid(), operator_message: 'Also do X.' })), 'claim_conflict');
+  assert.equal(intent.version, before);
+  assert.equal(intent.messages.length, 0);
+  releaseIntent(state, intent.intent_id, token);
+  assert.equal(replyIntent(state, intent.intent_id, { request_id: rid(), operator_message: 'Also do X.' }).replayed, false);
+
+  await withService(async ({ port, auth, root: svcRoot, env: e }) => {
+    const { csrf_token: csrf } = (await request(port, { path: '/api/cockpit/v1/capabilities', headers: auth })).json;
+    const headers = { ...auth, Origin: ORIGIN, 'X-Cockpit-CSRF': csrf, 'Content-Type': 'application/json' };
+    const created = await request(port, { method: 'POST', path: '/api/cockpit/v1/intents', headers, body: capture() });
+    new IntentStore({ root: svcRoot, env: e }).mutate((s) => claimIntent(s, created.json.intent_id));
+    const reply = await request(port, { method: 'POST', path: `/api/cockpit/v1/intents/${created.json.intent_id}/replies`, headers, body: { request_id: rid(), operator_message: 'More.' } });
+    assert.equal(reply.status, 409);
+    assert.equal(reply.json.error.code, 'claim_conflict');
+  });
+});
+
+test('auto-claim finds the oldest eligible intent beyond the first page', () => {
+  const root = makeRoot();
+  const state = { schema_version: 1, root, intents: [], requests: {} };
+  for (let i = 0; i < 105; i += 1) {
+    const { intent } = createIntent(state, root, capture());
+    intent.created_at = `2026-01-01T00:00:${String(i % 60).padStart(2, '0')}.${String(i).padStart(3, '0')}Z`;
+    if (i < 104) claimIntent(state, intent.intent_id);
+  }
+  const target = state.intents[104];
+  assert.equal(claimIntent(state, null).intent.intent_id, target.intent_id);
+  assert.equal(code(() => claimIntent(state, null)), 'no_eligible_intent');
+});
+
+test('intents.mjs list exposes cursors and --all walks every page', () => {
+  const root = makeRoot();
+  const e = env();
+  const store = new IntentStore({ root, env: e });
+  store.mutate((state) => { for (let i = 0; i < 7; i += 1) createIntent(state, root, capture()); });
+  const run = (...args) => spawnSync(process.execPath, [intentsScript, ...args, '--root', root], { encoding: 'utf8', env: e });
+  const first = JSON.parse(run('list', '--limit', '3', '--json').stdout);
+  assert.equal(first.items.length, 3);
+  assert.ok(first.next_cursor);
+  const second = JSON.parse(run('list', '--limit', '3', '--cursor', first.next_cursor, '--json').stdout);
+  const third = JSON.parse(run('list', '--limit', '3', '--cursor', second.next_cursor, '--json').stdout);
+  assert.equal(third.next_cursor, null);
+  const paged = [...first.items, ...second.items, ...third.items].map((item) => item.intent_id);
+  assert.equal(new Set(paged).size, 7);
+  const all = JSON.parse(run('list', '--limit', '2', '--all', '--json').stdout);
+  assert.deepEqual(all.items.map((item) => item.intent_id), paged);
+  assert.equal(all.next_cursor, null);
+  assert.match(run('list', '--limit', '3').stdout, /--cursor \S+/);
+  assert.equal(run('list', '--limit', '0').status, 1);
+  assert.equal(run('list', '--all', '--cursor', first.next_cursor).status, 1);
 });

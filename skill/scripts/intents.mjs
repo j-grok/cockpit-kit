@@ -24,7 +24,10 @@ function usage() {
 
 Commands:
   summary                         Counts and oldest open intent (session-start triage)
-  list [--view open|history|all]  List intents (default: open)
+  list [--view open|history|all] [--limit N] [--cursor C | --all]
+                                  List intents (default: open, 100 per page). When more
+                                  remain, output includes next_cursor; pass it back with
+                                  --cursor, or use --all to walk every page
   show <intent-id>                Show one intent
   claim [<intent-id>]             Claim an intent (oldest open if omitted); prints a claim token
   release <id> --claim <token>    Give up a claim without changing state
@@ -44,7 +47,7 @@ Common options:
 `;
 }
 
-const VALUE_FLAGS = new Set(['--root', '--cockpit-root', '--view', '--claim', '--question', '--outcome', '--summary', '--page', '--commit', '--reason', '--consumer', '--limit']);
+const VALUE_FLAGS = new Set(['--root', '--cockpit-root', '--view', '--claim', '--question', '--outcome', '--summary', '--page', '--commit', '--reason', '--consumer', '--limit', '--cursor']);
 
 export function parseArgs(argv) {
   const options = { positional: [], rootArgs: [] };
@@ -52,6 +55,7 @@ export function parseArgs(argv) {
     const arg = argv[i];
     if (arg === '--help' || arg === '-h') options.help = true;
     else if (arg === '--json') options.json = true;
+    else if (arg === '--all') options.all = true;
     else if (arg.startsWith('--')) {
       const eq = arg.indexOf('=');
       const name = eq === -1 ? arg : arg.slice(0, eq);
@@ -126,9 +130,32 @@ export function runIntentsCommand(argv, { env = process.env } = {}) {
     }
     case 'list': {
       const view = options.view ?? 'open';
-      const limit = options.limit ? Number.parseInt(options.limit, 10) : 100;
-      const { items } = listIntents(store.read(), { view, limit });
-      return out({ view, items: items.map(forAgent), trust: TRUST }, items.length ? items.map(renderIntent).join('\n\n') : `No ${view} intents.`);
+      let limit = 100;
+      if (options.limit !== undefined) {
+        limit = Number.parseInt(options.limit, 10);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 100 || String(limit) !== options.limit) throw new ArgumentError('--limit must be an integer from 1 to 100');
+      }
+      if (options.all && options.cursor) throw new ArgumentError('--all and --cursor cannot be combined');
+      const state = store.read();
+      let items;
+      let nextCursor;
+      if (options.all) {
+        // Walk every page of one snapshot so nothing is silently truncated.
+        items = [];
+        let cursor = null;
+        do {
+          const page = listIntents(state, { view, limit, cursor });
+          items.push(...page.items);
+          cursor = page.next_cursor;
+        } while (cursor);
+        nextCursor = null;
+      } else {
+        const page = listIntents(state, { view, limit, cursor: options.cursor ?? null });
+        items = page.items;
+        nextCursor = page.next_cursor;
+      }
+      const more = nextCursor ? `\n\nMore ${view} intents: rerun with --cursor ${nextCursor} (or use --all)` : '';
+      return out({ view, items: items.map(forAgent), next_cursor: nextCursor, trust: TRUST }, `${items.length ? items.map(renderIntent).join('\n\n') : `No ${view} intents.`}${more}`);
     }
     case 'show': {
       const id = requireId(options, command);

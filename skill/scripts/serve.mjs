@@ -123,6 +123,11 @@ function resolveServedFile(root, rawUrl) {
 
   const real = fs.realpathSync.native(file);
   if (!isPathInside(real, root)) return { status: 404 };
+  // Re-apply the private-path rules to the resolved target so an in-root
+  // symlink alias (e.g. `alias -> .git` or `-> .cockpit/x`) cannot expose it.
+  const realRelative = path.relative(fs.realpathSync.native(root), real).split(path.sep).join('/');
+  if (isGitPath(realRelative)) return { status: 404 };
+  if (isCockpitPrivatePath(realRelative) && realRelative !== allowedCockpitPath) return { status: 404 };
   return { status: 200, file: real, size: stat.size };
 }
 
