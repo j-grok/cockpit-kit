@@ -101,6 +101,96 @@ test('theme switcher is a compact control fixed to the top-right corner', () => 
   assert.match(css, /\.page\s*\{\s*padding-top:\s*max\(24px, var\(--cockpit-top-reserve/, 'mid widths keep the page column clear of the switcher');
 });
 
+// Flat list of { media, selector, body } for every style rule, with the
+// enclosing @media prelude ('' at top level). Comments are stripped first.
+function cssRules(source) {
+  const text = source.replace(/\/\*[\s\S]*?\*\//g, '');
+  const out = [];
+  const stack = [];
+  let start = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    if (text[i] === '{') {
+      const prelude = text.slice(start, i).trim();
+      if (prelude.startsWith('@')) stack.push(prelude);
+      else {
+        const end = text.indexOf('}', i);
+        for (const selector of prelude.split(',')) out.push({ media: stack.join(' '), selector: selector.trim(), body: text.slice(i + 1, end) });
+        i = end;
+      }
+      start = i + 1;
+    } else if (text[i] === '}') {
+      stack.pop();
+      start = i + 1;
+    }
+  }
+  return out;
+}
+
+function prop(body, name) {
+  return [...body.matchAll(new RegExp(`(?:^|[;{\\s])${name}\\s*:\\s*([^;]+);`, 'g'))].map((m) => m[1].trim()).pop();
+}
+
+// Elements enclosing the theme switcher in a page, outermost first.
+function switcherAncestors(html) {
+  const voids = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'source', 'track', 'wbr']);
+  const stack = [];
+  const body = html.replace(/<!--[\s\S]*?-->/g, '').replace(/<(script|style)\b[\s\S]*?<\/\1>/g, '');
+  for (const m of body.matchAll(/<(\/?)([a-z][a-z0-9-]*)\b([^>]*)>/gi)) {
+    const [, closing, tag, attrs] = m;
+    const name = tag.toLowerCase();
+    if (!closing && /class="theme-switch"/.test(attrs)) return stack;
+    if (voids.has(name) || attrs.endsWith('/')) continue;
+    if (closing) {
+      const at = stack.map((e) => e.tag).lastIndexOf(name);
+      if (at >= 0) stack.length = at;
+    } else stack.push({ tag: name, cls: (attrs.match(/class="([^"]*)"/)?.[1] ?? '').split(/\s+/).filter(Boolean) });
+  }
+  assert.fail('theme switcher not found');
+}
+
+test('theme switcher stays on top of scrolled page content at every breakpoint', () => {
+  // Regression: a fixed element's z-index only counts inside its nearest
+  // stacking-context ancestor. When the sticky nav (a stacking context) sat at
+  // z-index auto, positioned .card links later in <main> painted over the
+  // switcher after scrolling and swallowed its clicks at 721-1279px.
+  const rules = cssRules(css);
+  const switcherZ = Number(prop(rule(css, '.theme-switch'), 'z-index'));
+  const trapping = /^(transform|filter|backdrop-filter|perspective|contain|will-change|mix-blend-mode|isolation|clip-path|mask)$/;
+  const medias = [...new Set(rules.map((r) => r.media))];
+
+  for (const rel of pages) {
+    const html = fs.readFileSync(path.join(templateRoot, rel), 'utf8');
+    const ancestors = switcherAncestors(html);
+    assert.deepEqual(ancestors.map((e) => e.tag), ['html', 'body', 'nav'], `${rel}: switcher sits directly in the primary nav`);
+    for (const { tag, cls } of ancestors) {
+      const matches = (selector) => selector === tag || cls.some((c) => selector === `${tag}.${c}` || selector === `.${c}`);
+      const own = rules.filter((r) => matches(r.selector));
+      for (const r of own) {
+        for (const decl of r.body.matchAll(/([a-z-]+)\s*:\s*([^;]+);/g)) {
+          const [, name, value] = decl;
+          const harmless = (name === 'isolation' && value.trim() === 'auto') || (name === 'opacity' && Number(value) === 1) || value.trim() === 'none';
+          assert.ok(!(trapping.test(name) || name === 'opacity') || harmless, `${rel}: <${tag}> ${r.media || 'base'} sets ${name}, which traps or unfixes the switcher`);
+        }
+      }
+      // Effective position and z-index at each breakpoint (base + that media block).
+      for (const media of medias) {
+        const applied = own.filter((r) => r.media === '' || r.media === media);
+        const position = applied.map((r) => prop(r.body, 'position')).filter(Boolean).pop() ?? 'static';
+        const z = applied.map((r) => prop(r.body, 'z-index')).filter(Boolean).pop() ?? 'auto';
+        if (position === 'static') continue;
+        assert.ok(z !== 'auto' && Number(z) >= switcherZ, `${rel}: <${tag}> is position:${position} at ${media || 'base'} with z-index ${z}; it must be >= ${switcherZ} so the switcher inside it stays above <main>`);
+      }
+    }
+  }
+
+  // Nothing else in the stylesheet may outrank the switcher's layer.
+  for (const r of rules) {
+    const z = prop(r.body, 'z-index');
+    if (!z || r.selector.startsWith('.theme-switch') || r.selector === 'nav.cockpit-nav') continue;
+    assert.ok(Number(z) < switcherZ, `${r.selector} (${r.media || 'base'}) z-index ${z} would paint over the theme switcher`);
+  }
+});
+
 test('light and dark token sets define the same variables', () => {
   const { light, dark, media } = themeBlocks(css);
   assert.ok(light.size > 10);

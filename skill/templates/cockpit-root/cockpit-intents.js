@@ -10,6 +10,112 @@
  */
 (function () {
   'use strict';
+
+  // ---------- Pure helpers (no DOM; covered by node:test) ----------
+
+  // Error codes the service only returns after it has looked up the
+  // request_id (or for bytes that could never have been stored). Such a
+  // response proves the exact body was not stored, so the request is settled.
+  var DEFINITIVE_REJECTIONS = [
+    'invalid_field', 'unknown_field', 'unsupported_target', 'target_not_found', 'idempotency_conflict',
+    'intent_not_found', 'version_conflict', 'invalid_transition', 'claim_conflict', 'capacity_reached',
+    'invalid_json', 'invalid_encoding', 'body_too_large', 'unsupported_media_type',
+  ];
+  // Refusals that happen before the service reads or stores anything (auth,
+  // Origin/CSRF, rate limit). They prove only that *this attempt* was not
+  // stored, not what happened to an earlier attempt whose response was lost.
+  var REFUSAL_STATUSES = [401, 403, 407, 408, 429];
+
+  // 'confirmed' | 'rejected' | 'refused' | 'unknown' for one write attempt
+  // ({ status, ok, data }, or null for a network failure).
+  function writeOutcome(result) {
+    if (!result || typeof result.status !== 'number') return 'unknown';
+    if (result.ok && result.data && typeof result.data === 'object') return 'confirmed';
+    var code = result.data && result.data.error && result.data.error.code;
+    if (result.status >= 400 && result.status < 500 && DEFINITIVE_REJECTIONS.indexOf(code) !== -1) return 'rejected';
+    if (REFUSAL_STATUSES.indexOf(result.status) !== -1) return 'refused';
+    return 'unknown';
+  }
+
+  // Idempotent submissions. `track` is { requestId, pending } on a draft;
+  // pending is { body, snapshot, uncertain } until the outcome of that exact
+  // body is reconciled. While pending, the same bytes (same request id) are
+  // resent; only once it is confirmed or definitively rejected may newer
+  // edits go out, always under a fresh request id.
+  function nextSubmission(track, snapshot, build) {
+    if (!track.pending) track.pending = { body: build(track.requestId), snapshot: snapshot, uncertain: false };
+    return track.pending;
+  }
+
+  // Returns { outcome: 'confirmed' | 'rejected' | 'unknown', refused, edited }.
+  // edited: the draft changed since `pending` was built (newer text unsent).
+  function settleSubmission(track, pending, result, snapshot, newId) {
+    var outcome = writeOutcome(result);
+    var refused = outcome === 'refused';
+    // A refusal settles the body only if no earlier attempt could have been
+    // stored (no lost response, 5xx, or network failure so far).
+    if (refused) outcome = pending.uncertain ? 'unknown' : 'rejected';
+    var edited = snapshot !== pending.snapshot;
+    if (outcome === 'unknown') {
+      if (!refused) pending.uncertain = true;
+      return { outcome: outcome, refused: refused, edited: edited };
+    }
+    if (track.pending === pending) track.pending = null;
+    // Confirmed: this id now names the sent body. Rejected: the id may be
+    // spent (idempotency_conflict). Either way newer edits get a new id.
+    if (outcome === 'rejected' || edited) track.requestId = newId();
+    return { outcome: outcome, refused: refused, edited: edited };
+  }
+
+  // Request-list paging. A refresh supersedes an in-flight "Load more" but
+  // re-fetches the page it asked for, and polling is paused while one runs,
+  // so a loaded page is never dropped.
+  function createPager() {
+    return { seq: 0, pages: 1, more: null };
+  }
+  function pagerReset(p) {
+    p.seq += 1;
+    p.pages = 1;
+    p.more = null;
+  }
+  function pagerBeginRefresh(p, view) {
+    var want = p.pages + (p.more && p.more.view === view ? 1 : 0);
+    p.more = null;
+    p.seq += 1;
+    return { seq: p.seq, view: view, want: want };
+  }
+  function pagerFinishRefresh(p, ticket, pagesGot) {
+    if (ticket.seq !== p.seq) return false;
+    p.pages = Math.max(1, pagesGot);
+    return true;
+  }
+  function pagerBeginMore(p, view) {
+    if (p.more) return null;
+    p.seq += 1;
+    p.more = { seq: p.seq, view: view };
+    return p.more;
+  }
+  function pagerFinishMore(p, ticket, ok) {
+    if (p.more === ticket) p.more = null;
+    if (ticket.seq !== p.seq) return false;
+    if (ok) p.pages += 1;
+    return true;
+  }
+  function pagerCanPoll(p) {
+    return !p.more;
+  }
+
+  var helpers = {
+    writeOutcome: writeOutcome, nextSubmission: nextSubmission, settleSubmission: settleSubmission,
+    createPager: createPager, pagerReset: pagerReset, pagerBeginRefresh: pagerBeginRefresh, pagerFinishRefresh: pagerFinishRefresh,
+    pagerBeginMore: pagerBeginMore, pagerFinishMore: pagerFinishMore, pagerCanPoll: pagerCanPoll,
+  };
+  if (typeof window === 'undefined') {
+    if (typeof module === 'object' && module && module.exports) module.exports = helpers;
+    return;
+  }
+
+  // ---------- Widget ----------
   if (window.__cockpitIntents) return;
   window.__cockpitIntents = true;
 
@@ -121,8 +227,7 @@
   var draft = null; // drafts[mode] while a composer is shown
   var replyDrafts = {}; // per intent id: { text, requestId, version, note }
   var receipt = null; // last intent receipt shown in composer
-  var listSeq = 0; // bumps on every list load; stale responses are ignored
-  var pagesLoaded = 1; // pages shown in the current view (Load more adds one)
+  var pager = createPager(); // list load sequencing and pages shown (Load more adds one)
   var view = 'open';
   var pollTimer = null, pollDelay = 5000;
 
@@ -173,7 +278,7 @@
   function open(next, opener) {
     lastOpener = opener || lastOpener;
     if (mode !== next || next === 'requests') receipt = null;
-    if (next === 'requests') pagesLoaded = 1;
+    if (next === 'requests') pagerReset(pager);
     if (next === 'comment' || next === 'capture') {
       // Each mode keeps its own in-memory draft; switching never discards one.
       if (!drafts[next]) drafts[next] = newDraft(next);
@@ -253,40 +358,37 @@
     form.addEventListener('submit', function (e) {
       e.preventDefault();
       var submitted = draft;
-      // An unconfirmed earlier POST (lost response) is retried with its exact
-      // original body first, so the service replays it instead of reporting
-      // idempotency_conflict; newer edits are kept for a separate request.
-      var pending = submitted.pending;
-      if (!pending) {
-        if (!submitted.message.trim()) { status.textContent = 'Write a message first.'; message.focus(); return; }
+      // An unconfirmed earlier POST (lost response, or a retry refused by
+      // auth/CSRF/rate limits) is retried with its exact original body first,
+      // so the service replays it instead of reporting idempotency_conflict;
+      // newer edits are kept for a separate request.
+      if (!submitted.pending && !submitted.message.trim()) { status.textContent = 'Write a message first.'; message.focus(); return; }
+      var pending = nextSubmission(submitted, draftSnapshot(submitted), function (requestId) {
         var payload = {};
         if (submitted.quote.trim()) payload[isComment ? 'selected_text' : 'text'] = submitted.quote;
         if (!isComment && submitted.url.trim()) payload.url = submitted.url.trim();
         var req = {
           schema_version: 1,
-          request_id: submitted.requestId,
+          request_id: requestId,
           mode: submitted.mode,
           operator_message: submitted.message,
           target: isComment ? { page: target } : null,
         };
         if (isComment && submitted.type) req.type_hint = submitted.type;
         if (Object.keys(payload).length) req.payload = payload;
-        pending = submitted.pending = { body: JSON.stringify(req), snapshot: draftSnapshot(submitted) };
-      }
+        return JSON.stringify(req);
+      });
       var confirming = draftSnapshot(submitted) !== pending.snapshot;
       submit.disabled = true;
       status.textContent = confirming ? 'Confirming your earlier submission first…' : 'Sending…';
-      api('POST', '/intents', pending.body).then(function (result) {
+      function settled(result) {
         submit.disabled = false;
-        if (result.status === 201 || (result.status === 200 && result.data && result.data.replayed)) {
-          if (submitted.pending === pending) submitted.pending = null;
-          // A late response must not erase edits made after sending, or a
-          // different mode's draft.
-          var unchanged = draftSnapshot(submitted) === pending.snapshot;
-          if (drafts[submitted.mode] === submitted) {
-            if (unchanged) drafts[submitted.mode] = newDraft(submitted.mode, true);
-            else submitted.requestId = uuid(); // edited since sending: keep text, new request next time
-          }
+        // A late response must not erase edits made after sending, or a
+        // different mode's draft.
+        var outcome = settleSubmission(submitted, pending, result, draftSnapshot(submitted), uuid);
+        if (outcome.outcome === 'confirmed') {
+          var unchanged = !outcome.edited;
+          if (drafts[submitted.mode] === submitted && unchanged) drafts[submitted.mode] = newDraft(submitted.mode, true);
           var newReceipt = { intent_id: result.data.intent_id, status: 'Received', state: result.data.state, mode: submitted.mode };
           announce('Received. Request ' + newReceipt.intent_id.slice(0, 8) + ' is pending.');
           if (mode === submitted.mode && !panel.hidden) {
@@ -302,21 +404,19 @@
           }
           return;
         }
-        if (result.status >= 500) {
-          // Outcome unknown: keep the pending body for an exact retry.
-          if (status.isConnected) status.textContent = 'Receipt not confirmed; retry this submission (it will not be duplicated).';
-        } else {
-          // Definitively rejected; nothing was stored under this request id.
-          if (submitted.pending === pending) submitted.pending = null;
-          if (status.isConnected) status.textContent = errorText(result);
-        }
-        if (status.isConnected) announce(status.textContent);
-      }, function () {
-        submit.disabled = false;
         if (!status.isConnected) return;
-        status.textContent = 'Receipt not confirmed; retry this submission (it will not be duplicated).';
+        if (outcome.outcome === 'rejected') {
+          // Definitively not stored; the draft is kept for editing.
+          status.textContent = errorText(result) + (outcome.edited ? ' Your newer edits are kept; press Send to submit them.' : '');
+        } else if (outcome.refused) {
+          // Refused before the service could look up the earlier attempt.
+          status.textContent = errorText(result) + ' Your earlier submission is still unconfirmed; Send retries it first (it will not be duplicated).';
+        } else {
+          status.textContent = 'Receipt not confirmed; retry this submission (it will not be duplicated).';
+        }
         announce(status.textContent);
-      });
+      }
+      api('POST', '/intents', pending.body).then(settled, function () { settled(null); });
     });
     if (receipt) body.appendChild(renderReceipt());
     body.appendChild(form);
@@ -346,9 +446,9 @@
     [['open', 'Active'], ['history', 'Done']].forEach(function (pair) {
       var selected = view === pair[0];
       var tab = el('button', { type: 'button', role: 'tab', class: 'ci-tab', 'aria-selected': selected ? 'true' : 'false', tabindex: selected ? '0' : '-1', text: pair[1] });
-      tab.addEventListener('click', function () { view = pair[0]; pagesLoaded = 1; render(); body.querySelector('.ci-tab[aria-selected="true"]').focus(); schedule(0); });
+      tab.addEventListener('click', function () { view = pair[0]; pagerReset(pager); render(); body.querySelector('.ci-tab[aria-selected="true"]').focus(); schedule(0); });
       tab.addEventListener('keydown', function (e) {
-        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); view = view === 'open' ? 'history' : 'open'; pagesLoaded = 1; render(); body.querySelector('.ci-tab[aria-selected="true"]').focus(); schedule(0); }
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); view = view === 'open' ? 'history' : 'open'; pagerReset(pager); render(); body.querySelector('.ci-tab[aria-selected="true"]').focus(); schedule(0); }
       });
       tabs.appendChild(tab);
     });
@@ -377,8 +477,8 @@
     var list = body.querySelector('.ci-list');
     if (!list) return Promise.resolve(true);
     var forView = view;
-    var seq = ++listSeq;
-    var want = pagesLoaded;
+    // Supersedes any load in flight; includes a pending Load more page.
+    var ticket = pagerBeginRefresh(pager, forView);
     var items = [];
     var cursor = null;
     var got = 0;
@@ -388,14 +488,14 @@
         items = items.concat(result.data.items);
         cursor = result.data.next_cursor;
         got += 1;
-        if (cursor && got < want && seq === listSeq) return step();
+        if (cursor && got < ticket.want && ticket.seq === pager.seq) return step();
         return result;
       });
     }
     return step().then(function (result) {
-      // Ignore responses superseded by a newer load (including Load more), a
-      // view/mode change, or that arrive while the operator is typing a reply.
-      if (seq !== listSeq || mode !== 'requests' || view !== forView || !list.isConnected) return true;
+      // Ignore responses superseded by a newer load, a view/mode change, or
+      // that arrive while the operator is typing a reply.
+      if (ticket.seq !== pager.seq || mode !== 'requests' || view !== forView || !list.isConnected) return true;
       if (!force && isEditingReply()) return true;
       list.setAttribute('aria-busy', 'false');
       if (!result.ok) {
@@ -404,6 +504,7 @@
         list.insertBefore(el('p', { class: 'ci-status', text: errorText(result) }), list.firstChild);
         return false;
       }
+      pagerFinishRefresh(pager, ticket, got);
       list.textContent = '';
       if (!items.length) {
         list.appendChild(el('p', { class: 'ci-hint', text: forView === 'open' ? 'No active requests.' : 'No completed requests yet.' }));
@@ -416,25 +517,31 @@
       if (cursor) list.appendChild(moreButton(cursor));
       return true;
     }, function () {
-      if (seq !== listSeq) return false;
+      if (ticket.seq !== pager.seq) return false;
       list.setAttribute('aria-busy', 'false');
       if (!list.querySelector('.ci-status')) list.insertBefore(el('p', { class: 'ci-status', text: 'Service temporarily unavailable.' }), list.firstChild);
       return false;
     });
   }
 
+  // Polling is paused while a page is loading; a refresh the operator
+  // triggers meanwhile re-fetches that page too (see pagerBeginRefresh).
   function loadMore(cursor) {
     var list = body.querySelector('.ci-list');
     if (!list) return;
     var forView = view;
-    var seq = ++listSeq; // supersedes any refresh already in flight
+    var ticket = pagerBeginMore(pager, forView);
+    if (!ticket) return;
+    stopPolling();
     var button = list.querySelector('.ci-more');
     if (button) button.disabled = true;
+    function resume() {
+      if (mode === 'requests') schedule(pollDelay);
+    }
     fetchPage(forView, cursor).then(function (result) {
-      if (seq !== listSeq || mode !== 'requests' || view !== forView || !list.isConnected) return;
+      if (!pagerFinishMore(pager, ticket, result.ok) || mode !== 'requests' || view !== forView || !list.isConnected) return;
       if (button) button.remove();
-      if (!result.ok) { list.appendChild(el('p', { class: 'ci-status', text: errorText(result) })); list.appendChild(moreButton(cursor)); return; }
-      pagesLoaded += 1;
+      if (!result.ok) { list.appendChild(el('p', { class: 'ci-status', text: errorText(result) })); list.appendChild(moreButton(cursor)); resume(); return; }
       var first = null;
       result.data.items.forEach(function (intent) {
         var node = renderIntent(intent);
@@ -443,10 +550,12 @@
       });
       if (result.data.next_cursor) list.appendChild(moreButton(result.data.next_cursor));
       if (first) first.focus();
+      resume();
     }, function () {
-      if (seq !== listSeq) return;
+      if (!pagerFinishMore(pager, ticket, false)) return;
       if (button) button.disabled = false;
       announce('Could not load more; try again.');
+      resume();
     });
   }
 
@@ -527,39 +636,37 @@
       e.preventDefault();
       // Retry an unconfirmed reply with its exact original body (request id,
       // text, and version), even if the record was re-rendered since.
-      var pending = d.pending;
-      if (!pending) {
-        if (!d.text.trim()) { status.textContent = 'Write a reply first.'; return; }
-        pending = d.pending = { body: JSON.stringify({ request_id: d.requestId, operator_message: d.text, version: d.version }), text: d.text };
-      }
-      var sentText = pending.text;
+      if (!d.pending && !d.text.trim()) { status.textContent = 'Write a reply first.'; return; }
+      var pending = nextSubmission(d, d.text, function (requestId) {
+        return JSON.stringify({ request_id: requestId, operator_message: d.text, version: d.version });
+      });
       send.disabled = true;
-      api('POST', '/intents/' + id + '/replies', pending.body).then(function (result) {
+      function settled(result) {
         send.disabled = false;
-        if (result.status < 500 && d.pending === pending) d.pending = null;
-        if (result.ok) {
+        var outcome = settleSubmission(d, pending, result, d.text, uuid);
+        if (outcome.outcome === 'confirmed') {
           // Acknowledged: clear this draft (text, request id, version) unless
           // it was edited after sending, in which case keep the newer text
-          // under a fresh request id.
+          // (already moved to a fresh request id).
           if (replyDrafts[id] === d) {
-            if (d.text === sentText) delete replyDrafts[id];
-            else { d.requestId = uuid(); d.note = 'Earlier text was sent; this edit is not sent yet.'; }
+            if (!outcome.edited) delete replyDrafts[id];
+            else d.note = 'Earlier text was sent; this edit is not sent yet.';
           }
           announce('Reply received.');
           refreshList(true, id);
           return;
         }
-        var code = result.data && result.data.error && result.data.error.code;
-        if (code === 'version_conflict' || code === 'claim_conflict' || code === 'invalid_transition') {
+        var code = result && result.data && result.data.error && result.data.error.code;
+        if (outcome.outcome === 'rejected' && (code === 'version_conflict' || code === 'claim_conflict' || code === 'invalid_transition')) {
           reloadIntent(id, d, code);
           return;
         }
-        status.textContent = result.status >= 500 ? 'Receipt not confirmed; retry (it will not be duplicated).' : errorText(result);
+        if (outcome.outcome === 'rejected') status.textContent = errorText(result);
+        else if (outcome.refused) status.textContent = errorText(result) + ' Your earlier reply is still unconfirmed; sending retries it first (it will not be duplicated).';
+        else status.textContent = 'Receipt not confirmed; retry (it will not be duplicated).';
         announce(status.textContent);
-      }, function () {
-        send.disabled = false;
-        status.textContent = 'Receipt not confirmed; retry (it will not be duplicated).';
-      });
+      }
+      api('POST', '/intents/' + id + '/replies', pending.body).then(settled, function () { settled(null); });
     });
     return form;
   }
@@ -623,7 +730,7 @@
     var work;
     if (mode === 'requests') {
       // While a reply is being typed, skip this refresh but keep polling alive.
-      if (isEditingReply()) { schedule(pollDelay); return; }
+      if (isEditingReply() || !pagerCanPoll(pager)) { schedule(pollDelay); return; }
       if (!body.querySelector('.ci-list')) render();
       work = loadList();
     } else if (receipt) {

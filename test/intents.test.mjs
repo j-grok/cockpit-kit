@@ -823,3 +823,78 @@ test('target resolution applies hidden/excluded rules to symlink-resolved paths'
   const { token } = claimIntent(state, intent.intent_id);
   assert.equal(code(() => resolveIntent(state, root, intent.intent_id, token, { outcome: 'answered', summary: 'x', page: '/files/a.html' })), 'target_not_found');
 });
+
+// ---------- commit verification is bound to the repo Git discovers from the root ----------
+
+function gitRepo(dir) {
+  fs.mkdirSync(dir, { recursive: true });
+  spawnSync('git', ['init', '-q', dir]);
+  fs.writeFileSync(path.join(dir, 'README.md'), `${path.basename(dir)}\n`);
+  spawnSync('git', ['-C', dir, 'add', '-A']);
+  spawnSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', 'init']);
+  return spawnSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
+}
+
+function siteIn(dir) {
+  fs.mkdirSync(path.join(dir, '.cockpit'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'index.html'), '<h1>Home</h1>');
+  return dir;
+}
+
+function resolveWith(root, commit) {
+  const state = { schema_version: 1, root, intents: [], requests: {} };
+  const { intent } = createIntent(state, root, capture());
+  const { token } = claimIntent(state, intent.intent_id);
+  return { result: () => resolveIntent(state, root, intent.intent_id, token, { outcome: 'changed', summary: 'Fixed.', commit }), intent };
+}
+
+test('resolve verifies commits for a Cockpit root nested in a Git work tree', () => {
+  const repo = tempDir('cockpit-intents-outer-');
+  const head = gitRepo(repo);
+  const root = siteIn(path.join(repo, 'site'));
+  assert.equal(fs.existsSync(path.join(root, '.git')), false);
+  // Previously skipped because <root>/.git was absent, so any hex id was stored.
+  assert.equal(code(() => resolveWith(root, 'deadbeef').result()), 'invalid_field');
+  const ok = resolveWith(root, head.slice(0, 10));
+  ok.result();
+  assert.equal(ok.intent.result.commit, head);
+});
+
+test('resolve binds commit checks to the root\'s own repo, not an enclosing one or GIT_DIR', () => {
+  const outer = tempDir('cockpit-intents-outer-');
+  const outerHead = gitRepo(outer);
+  // A root with its own (nested) repo inside another repo uses the inner repo.
+  const inner = siteIn(path.join(outer, 'inner'));
+  const innerHead = gitRepo(inner);
+  assert.equal(code(() => resolveWith(inner, outerHead).result()), 'invalid_field');
+  const ok = resolveWith(inner, innerHead);
+  ok.result();
+  assert.equal(ok.intent.result.commit, innerHead);
+
+  // An unusable <root>/.git must not fall through to the enclosing repo.
+  const broken = siteIn(path.join(outer, 'broken'));
+  fs.mkdirSync(path.join(broken, '.git'));
+  assert.equal(code(() => resolveWith(broken, outerHead).result()), 'invalid_field');
+  const dangling = siteIn(path.join(tempDir('cockpit-intents-plain-'), 'site'));
+  fs.writeFileSync(path.join(dangling, '.git'), 'gitdir: /nonexistent/cockpit-test.git\n');
+  assert.equal(code(() => resolveWith(dangling, 'deadbeef').result()), 'invalid_field');
+
+  // GIT_DIR / GIT_WORK_TREE in the agent's environment cannot redirect the check.
+  const saved = { GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE };
+  process.env.GIT_DIR = path.join(outer, '.git');
+  process.env.GIT_WORK_TREE = outer;
+  try {
+    assert.equal(code(() => resolveWith(inner, outerHead).result()), 'invalid_field');
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+
+  // A root outside any repository still records the id as given (no repo to check).
+  const plain = siteIn(tempDir('cockpit-intents-nogit-'));
+  const free = resolveWith(plain, 'deadbeef');
+  free.result();
+  assert.equal(free.intent.result.commit, 'deadbeef');
+});
