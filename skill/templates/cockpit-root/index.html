@@ -3,10 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
   <meta name="cockpit:source" content="self">
   <meta name="cockpit:rendered-at" content="2026-07-05T18:00:00Z">
   <title>Cockpit</title>
   <link rel="stylesheet" href="./cockpit.css">
+  <script src="./cockpit-theme.js"></script>
 </head>
 <body>
   <nav aria-label="Primary" class="cockpit-nav">
@@ -18,13 +20,22 @@
     <a href="inbox/">Inbox</a>
     <a href="search/">Search</a>
     <a href="design-system.html">Design System</a>
+    <fieldset class="theme-switch" data-cockpit-theme-switch hidden>
+      <legend>Theme</legend>
+      <div class="options">
+        <label><input type="radio" name="cockpit-theme" value="system" checked><span>System</span></label>
+        <label><input type="radio" name="cockpit-theme" value="light"><span>Light</span></label>
+        <label><input type="radio" name="cockpit-theme" value="dark"><span>Dark</span></label>
+      </div>
+      <span class="sr-only" data-cockpit-theme-resolved aria-live="polite"></span>
+    </fieldset>
   </nav>
   <main class="page">
     <header class="masthead">
       <h1>Cockpit</h1>
       <p>Local-first knowledge base for private notes, rendered pages, and shared agent context.</p>
     </header>
-    <p class="lede">This starter root now uses the same light industrial console register as the current Cockpit: mono type, light gray canvas, thin rules, compact cards, and a persistent search field in the upper-left navigation rail.</p>
+    <p class="lede">This starter root uses the Cockpit industrial console register: mono type, a gray canvas in light or dark, thin rules, compact cards, and a persistent search field in the upper-left navigation rail.</p>
     <h2 class="section">Start here</h2>
     <div class="grid-list" aria-label="Starter links">
       <a class="card" href="inbox/">

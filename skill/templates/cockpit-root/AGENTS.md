@@ -3,3 +3,4 @@
 - Do not use ambient git.
 - Resolve root through config.
 - Treat the repo as private unless the operator says otherwise.
+- Use `cockpit.css` color tokens (`var(--ink)`, `var(--surface)`, ...) instead of literal colors so pages follow the Light / Dark / System theme.

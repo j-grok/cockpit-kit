@@ -77,6 +77,17 @@ node ~/.local/share/cockpit-kit/skill/scripts/serve.mjs --root /path/to/knowledg
 
 `serve.mjs` binds to loopback by default and prints a tokenized URL. Use `--no-auth` only on a trusted machine.
 
+## Themes: Light, Dark, System
+
+The starter knowledge repo ships a light and a dark palette and a theme switcher in the navigation of every starter page.
+
+- **System** (default) follows the operating system's `prefers-color-scheme`, including changes while the page is open. **Light** and **Dark** pin a palette.
+- The choice is a non-private display preference stored only in the browser's `localStorage` under `cockpit-theme`. Nothing is sent anywhere.
+- `cockpit-theme.js` is a tiny same-origin script loaded synchronously in `<head>`, right after `cockpit.css`. It sets `<html data-theme="system|light|dark">` and the `color-scheme` meta before the body is painted, so a stored choice does not flash the wrong palette. No inline script is required.
+- `cockpit.css` defines the palettes as custom-property token sets: `:root` / `:root[data-theme="light"]`, `:root[data-theme="dark"]`, and a `@media (prefers-color-scheme: dark)` block for System. Without JavaScript, pages still follow the operating system and the switcher stays hidden.
+
+When writing or rendering pages, use the tokens (`var(--bg)`, `var(--surface)`, `var(--ink)`, `var(--ink-soft)`, `var(--accent)`, `var(--rule)`, and so on) instead of literal colors so the page follows the theme. Add new color tokens to every theme block with the same name. To opt a page into the switcher, copy the `<head>` script tag and the `fieldset.theme-switch` markup from a starter page. See the page contract for the full guidance.
+
 ## AI adapters
 
 Setup can install symlinked adapters. Each adapter symlink points at the kit's `skill/` directory (the isolated AI-skill payload), not the repo root:

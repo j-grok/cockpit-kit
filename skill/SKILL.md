@@ -50,6 +50,7 @@ Load `<skill-dir>/reference/page-contract.md` when in doubt. Every rendered page
 - Do not use cross-origin stylesheets or scripts. Same-origin assets, including `/cockpit.css`, are allowed.
 - Render a top-of-body `<nav>` from `.cockpit/nav.toml`, with depth-correct links and one `aria-current="page"` entry.
 - Use mobile-readable layouts. Do not use fixed `width: NNNpx` rules over 320px; prefer `max-width`.
+- Use `cockpit.css` color tokens such as `var(--bg)`, `var(--surface)`, `var(--ink)`, and `var(--accent)` instead of literal colors so pages work in the Light, Dark, and System themes. When the root ships `cockpit-theme.js`, keep its `<head>` script tag, the `color-scheme` meta, and the nav theme switcher from the starter pages on every page you render. See "Guidance: color themes" in the page contract.
 
 ## Choosing Source Mode
 
