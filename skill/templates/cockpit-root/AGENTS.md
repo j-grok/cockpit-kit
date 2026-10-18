@@ -4,3 +4,4 @@
 - Resolve root through config.
 - Treat the repo as private unless the operator says otherwise.
 - Use `cockpit.css` color tokens (`var(--ink)`, `var(--surface)`, ...) instead of literal colors so pages follow the Light / Dark / System theme.
+- When several agents share this repo, wrap each edit-index-commit-push in the kit's `lock.mjs run --holder <name> -- ...`.

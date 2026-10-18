@@ -123,6 +123,29 @@ If `COCKPIT_ROOT/.git/` exists, commit every file-changing operation in the know
 
 Never run ambient `git add` or `git commit` from the caller's current directory.
 
+## Write Lock (shared Cockpits)
+
+When more than one agent may write to `COCKPIT_ROOT` (several local agents, or agents connecting over SSH), serialize every file-changing operation with the advisory write lock. Check who holds it with:
+
+```bash
+node <skill-dir>/scripts/lock.mjs status --root "$COCKPIT_ROOT"
+```
+
+- Pick a short, stable holder name that is unique to you (for example your agent name), and use it consistently.
+- Wrap each complete edit, lint, index, commit, push operation in one `lock run`, so the lock is released even if a step fails:
+
+  ```bash
+  node <skill-dir>/scripts/lock.mjs run --holder <your-name> --purpose "<short note>" --wait 2m --root "$COCKPIT_ROOT" -- \
+    sh -c '<your edit/render step> && node <skill-dir>/scripts/lint.mjs --root "$COCKPIT_ROOT" && node <skill-dir>/scripts/search-index.mjs --root "$COCKPIT_ROOT" && git -C "$COCKPIT_ROOT" add -- <your files> .cockpit/search-index.json && git -C "$COCKPIT_ROOT" commit -m "<type>: <subject>" && git -C "$COCKPIT_ROOT" pull --rebase && git -C "$COCKPIT_ROOT" push'
+  ```
+
+  Commands inside `lock run` see `COCKPIT_LOCK_HOLDER`, so `search-index.mjs` proceeds under your lock. Outside a lock, pass `--holder <your-name>` to `search-index.mjs` only if you hold the lock.
+- To hold the lock across several separate tool calls, `lock.mjs acquire --holder <your-name> --purpose "..." --wait 2m` first and always `lock.mjs release --holder <your-name>` at the end, including after failures. Keep `--ttl` (default `10m`) longer than the work, or re-run `acquire` to renew.
+- Inside the lock: stage only the files you touched (never `git add -A`), and `git -C "$COCKPIT_ROOT" pull --rebase` before `push`. If the rebase conflicts, resolve it or abort it before releasing; never force-push.
+- If the lock is busy (exit status `75`), wait and retry; do not delete `.cockpit/lock` and do not use `release --force`. `--force` is for the operator, or when the operator tells you the holder is gone. Expired locks and locks whose process died on the same host are taken over automatically.
+- Never commit `.cockpit/lock*`. If `lock.mjs` warns that the lock is not gitignored, tell the operator and propose adding `/.cockpit/lock*` to the repo's `.gitignore`.
+- The lock is advisory. It only protects agents that use it, so use it for every write, including manifest and nav edits.
+
 ## Operator Request Queue
 
 Some Cockpits run the optional write service (`serve.mjs --write` or `intents-service.mjs`), which lets the operator leave page comments and quick captures from the browser. The operator configures which exact browser origins may submit (one repeated `--origin scheme://host[:port]` flag per origin; no wildcards). Do not change that list or start the service unless the operator asks. Requests live in a private state file outside `COCKPIT_ROOT`; read and transition them only with the consumer CLI, never by opening that file or by scanning pages for request-like JSON.
@@ -162,4 +185,5 @@ Before reporting success:
 - `.cockpit/nav.toml` and `.cockpit/sources.toml` are consistent with touched pages.
 - After render/delete, `node <skill-dir>/scripts/search-index.mjs --root "$COCKPIT_ROOT"` was run, or reported as a Phase 3 deferred script if absent.
 - If `COCKPIT_ROOT/.git/` exists, only files touched by this operation were staged and committed with `git -C "$COCKPIT_ROOT"`.
+- In a shared Cockpit, the operation ran under `lock.mjs run` (or an acquire/release pair) and the lock is released.
 - Run `node <skill-dir>/scripts/lint.mjs --root "$COCKPIT_ROOT"` in non-strict mode when available, and report all warnings to the user.
