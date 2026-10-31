@@ -13,6 +13,7 @@ It is an AI-agent local memory kit, not the Red Hat Cockpit Linux server adminis
 - Generates a deterministic static search index.
 - Serves the local repo over a loopback-only HTTP server with token auth by default.
 - Optionally accepts operator page comments and captures through an opt-in write service.
+- Provides an advisory write lock so several agents can safely share one knowledge repo.
 
 ## Requirements
 
@@ -77,6 +78,34 @@ node ~/.local/share/cockpit-kit/skill/scripts/serve.mjs --root /path/to/knowledg
 ```
 
 `serve.mjs` binds to loopback by default and prints a tokenized URL. Use `--no-auth` only on a trusted machine.
+
+## Multi-agent write lock
+
+When several agents edit the same knowledge repo (on one machine, or over SSH into the machine that hosts it), their edit, lint, index, commit, and push steps can collide on `.cockpit/nav.toml`, the search index, and the git index. `lock.mjs` provides an advisory, cockpit-scoped write lock to serialize those operations.
+
+```bash
+# Wrap one whole operation; the lock is released even if the command fails.
+node ~/.local/share/cockpit-kit/skill/scripts/lock.mjs run --holder <agent-name> \
+  --purpose "render inbox" --wait 2m --root /path/to/knowledge-repo -- \
+  sh -c '<edit> && node <kit>/skill/scripts/search-index.mjs --root /path/to/knowledge-repo && git -C /path/to/knowledge-repo add <files> && git -C /path/to/knowledge-repo commit -m "docs: ..." && git -C /path/to/knowledge-repo pull --rebase && git -C /path/to/knowledge-repo push'
+
+# Inspect, or hold the lock across several separate commands.
+node ~/.local/share/cockpit-kit/skill/scripts/lock.mjs status [--json]
+node ~/.local/share/cockpit-kit/skill/scripts/lock.mjs acquire --holder <agent-name> [--purpose <text>] [--ttl 10m] [--wait 2m] [--pid <pid>]
+node ~/.local/share/cockpit-kit/skill/scripts/lock.mjs release --holder <agent-name>
+node ~/.local/share/cockpit-kit/skill/scripts/lock.mjs release --force   # operator override
+```
+
+From another machine, run the same command over SSH on the host that holds the repo, for example `ssh <user>@<cockpit-host> 'node ~/cockpit-kit/skill/scripts/lock.mjs run --holder <agent-name> --root ~/<knowledge-repo> --wait 2m -- <command...>'`.
+
+- **Where:** `<root>/.cockpit/lock`, a JSON record `{holder, purpose, pid, pid_bound, host, acquired_at, expires_at}`. It is created atomically (written to a temp file, then hard-linked into place, which fails if a lock already exists), so exactly one agent wins and readers never see a partial record. `.cockpit/` is not served (only `.cockpit/search-index.json` is), so the lock is never exposed over HTTP.
+- **Gitignore:** keep it out of commits with `/.cockpit/lock*` in the repo's `.gitignore`. The starter template ships this; for existing repos, add the line yourself. `lock.mjs` warns when the lock is not ignored.
+- **Holders:** `--holder` is a short label (letters, digits, `. _ @ : -`), unique per agent. The same holder acquiring again renews the lock instead of deadlocking. Only the holder may release it; `--force` is for operators clearing a stuck lock.
+- **Expiry and stale locks:** every lock has a TTL (`--ttl`, default `10m`); `run` renews it while the command is running. An expired lock, or a `run` (or `acquire --pid`) lock whose process is gone on the same host, is taken over by the next acquirer with a message naming the previous holder. A detached `acquire` lock without `--pid` only expires by TTL.
+- **Waiting:** `--wait <duration>` polls for a busy lock (default `0s`, fail immediately). A busy lock exits with status `75`, so scripts can retry.
+- **`run`:** acquires, runs the command (no shell; use `sh -c '...'` for pipelines), releases, and exits with the command's status. Signals (`SIGINT`, `SIGTERM`, `SIGHUP`) are forwarded to the command. The command sees `COCKPIT_LOCK_HOLDER=<holder>`.
+- **Kit commands honor it:** `search-index.mjs` checks the lock before writing. With no lock, nothing changes. If another holder has a live lock, it waits up to `--lock-wait` (default `10s`) and then exits `75` with the holder's details. Under `lock run`, or with `--holder <name>` / `COCKPIT_LOCK_HOLDER` matching the holder, it proceeds. A stale lock only triggers a warning.
+- **Advisory:** the lock coordinates cooperating tools and agents. Plain `git`, editors, and scripts that do not check it are not blocked.
 
 ## Operator comments and capture (MVP, opt-in)
 

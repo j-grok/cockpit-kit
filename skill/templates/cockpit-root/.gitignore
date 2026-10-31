@@ -1,0 +1,2 @@
+# Cockpit Kit advisory write lock (skill/scripts/lock.mjs); never commit it.
+/.cockpit/lock*

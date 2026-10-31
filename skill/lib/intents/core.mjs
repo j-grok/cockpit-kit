@@ -411,6 +411,24 @@ export function releaseIntent(state, id, token) {
   return { intent };
 }
 
+// Operator override for a claim whose token was lost or whose holder is
+// gone. Clears the claim only (state, messages, result are unchanged) and
+// appends an audit entry to processing.history.
+export function forceReleaseIntent(state, id, { reason, consumer = 'operator' } = {}) {
+  const intent = findIntent(state, id);
+  const why = boundedString(reason, 'reason', 200, { required: true, nonBlank: true });
+  const claim = intent.processing.claim;
+  if (!claim) throw new IntentError(409, 'claim_required', 'Intent is not claimed.');
+  if (!Array.isArray(intent.processing.history)) intent.processing.history = [];
+  intent.processing.history.push({
+    kind: 'force_release', at: now(), reason: why, by: String(consumer).slice(0, 64),
+    released_consumer: claim.consumer, claimed_at: claim.claimed_at,
+  });
+  intent.processing.claim = null;
+  touch(intent);
+  return { intent };
+}
+
 export function askIntent(state, id, token, question) {
   const intent = findIntent(state, id);
   if (intent.state !== 'open') throw new IntentError(409, 'invalid_transition', `Cannot ask on an intent in state ${intent.state}.`);

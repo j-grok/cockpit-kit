@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { ArgumentError, resolveRoot, validateCockpitRoot } from '../lib/config.mjs';
 import { assertNode20 } from '../lib/paths.mjs';
 import {
-  IntentError, askIntent, claimIntent, consumerArchive, listIntents, releaseIntent, resolveIntent, summarize,
+  IntentError, askIntent, claimIntent, consumerArchive, forceReleaseIntent, listIntents, releaseIntent, resolveIntent, summarize,
 } from '../lib/intents/core.mjs';
 import { IntentStore, StoreError } from '../lib/intents/store.mjs';
 
@@ -31,6 +31,9 @@ Commands:
   show <intent-id>                Show one intent
   claim [<intent-id>]             Claim an intent (oldest open if omitted); prints a claim token
   release <id> --claim <token>    Give up a claim without changing state
+  release <id> --force --reason <text> [--consumer <name>]
+                                  Operator only: clear a claim whose token is lost or
+                                  whose holder is gone; records an audit entry
   ask <id> --claim <token> --question <text>
                                   Ask the operator a question (state -> needs-input)
   resolve <id> --claim <token> --outcome <changed|already_satisfied|answered|declined>
@@ -56,6 +59,7 @@ export function parseArgs(argv) {
     if (arg === '--help' || arg === '-h') options.help = true;
     else if (arg === '--json') options.json = true;
     else if (arg === '--all') options.all = true;
+    else if (arg === '--force') options.force = true;
     else if (arg.startsWith('--')) {
       const eq = arg.indexOf('=');
       const name = eq === -1 ? arg : arg.slice(0, eq);
@@ -78,7 +82,7 @@ function forAgent(intent) {
   const { processing, ...rest } = intent;
   return {
     ...rest,
-    processing: { attempts: processing.attempts, claimed: Boolean(processing.claim), consumer: processing.claim?.consumer ?? null, claimed_at: processing.claim?.claimed_at ?? null },
+    processing: { attempts: processing.attempts, claimed: Boolean(processing.claim), consumer: processing.claim?.consumer ?? null, claimed_at: processing.claim?.claimed_at ?? null, ...(processing.history?.length ? { history: processing.history } : {}) },
   };
 }
 
@@ -169,6 +173,11 @@ export function runIntentsCommand(argv, { env = process.env } = {}) {
     }
     case 'release': {
       const id = requireId(options, command);
+      if (options.force) {
+        if (options.claim) throw new ArgumentError('Use either --claim or --force, not both.');
+        const { intent } = store.mutate((state) => forceReleaseIntent(state, id, { reason: options.reason, consumer: options.consumer ?? 'operator' }));
+        return out({ intent: forAgent(intent) }, `force-released ${intent.intent_id}`);
+      }
       const { intent } = store.mutate((state) => releaseIntent(state, id, options.claim));
       return out({ intent: forAgent(intent) }, `released ${intent.intent_id}`);
     }

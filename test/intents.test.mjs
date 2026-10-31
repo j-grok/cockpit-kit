@@ -7,7 +7,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import {
-  askIntent, claimIntent, consumerArchive, createIntent, listIntents, operatorArchive, publicIntent, releaseIntent, replyIntent, resolveIntent, resolveTargetPage,
+  askIntent, claimIntent, consumerArchive, createIntent, forceReleaseIntent, listIntents, operatorArchive, publicIntent, releaseIntent, replyIntent, resolveIntent, resolveTargetPage,
 } from '../skill/lib/intents/core.mjs';
 import { IntentStore, StoreError, stateDirFor } from '../skill/lib/intents/store.mjs';
 import { createIntentsService } from '../skill/scripts/intents-service.mjs';
@@ -897,4 +897,44 @@ test('resolve binds commit checks to the root\'s own repo, not an enclosing one 
   const free = resolveWith(plain, 'deadbeef');
   free.result();
   assert.equal(free.intent.result.commit, 'deadbeef');
+});
+
+test('force release clears a lost claim, keeps state, and records an audit entry', () => {
+  const root = makeRoot();
+  const state = { schema_version: 1, root, intents: [], requests: {} };
+  const { intent } = createIntent(state, root, capture());
+  claimIntent(state, intent.intent_id, { consumer: 'holder' });
+  const before = { state: intent.state, messages: intent.messages.length, attempts: intent.processing.attempts };
+  assert.equal(code(() => forceReleaseIntent(state, intent.intent_id, {})), 'invalid_field');
+  forceReleaseIntent(state, intent.intent_id, { reason: 'token lost', consumer: 'op' });
+  assert.equal(intent.processing.claim, null);
+  assert.equal(intent.state, before.state);
+  assert.equal(intent.messages.length, before.messages);
+  assert.equal(intent.processing.attempts, before.attempts);
+  assert.equal(intent.processing.history.length, 1);
+  const entry = intent.processing.history[0];
+  assert.equal(entry.kind, 'force_release');
+  assert.equal(entry.reason, 'token lost');
+  assert.equal(entry.by, 'op');
+  assert.equal(entry.released_consumer, 'holder');
+  assert.ok(entry.at);
+  assert.equal(code(() => forceReleaseIntent(state, intent.intent_id, { reason: 'again' })), 'claim_required');
+  assert.ok(claimIntent(state, intent.intent_id).token);
+});
+
+test('intents CLI release --force works without the claim token', () => {
+  const root = makeRoot();
+  const env = { ...process.env, XDG_STATE_HOME: tempDir('cockpit-state-') };
+  const store = new IntentStore({ root, env });
+  const id = store.mutate((s) => createIntent(s, root, capture())).intent.intent_id;
+  store.mutate((s) => claimIntent(s, id, { consumer: 'holder' }));
+  const run = (args) => spawnSync(process.execPath, [intentsScript, ...args, '--root', root, '--json'], { env, encoding: 'utf8' });
+  assert.notEqual(run(['release', id, '--force']).status, 0);
+  const ok = run(['release', id, '--force', '--reason', 'lost token', '--consumer', 'op']);
+  assert.equal(ok.status, 0, ok.stderr);
+  const shown = JSON.parse(ok.stdout).intent;
+  assert.equal(shown.processing.claimed, false);
+  assert.equal(shown.state, 'open');
+  assert.equal(shown.processing.history[0].by, 'op');
+  assert.ok(!ok.stdout.includes('token_sha256'));
 });
